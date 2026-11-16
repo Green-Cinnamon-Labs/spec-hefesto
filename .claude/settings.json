@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(//c/Projetos/gclabs/tep-ihm-web/**)",
+      "Edit(//c/Projetos/gclabs/tep-ihm-api/**)",
+      "Edit(//c/Projetos/gclabs/tep-historian/**)",
+      "Edit(//c/Projetos/gclabs/tep-ihm/**)",
+      "Write(//c/Projetos/gclabs/tep-ihm-web/**)",
+      "Write(//c/Projetos/gclabs/tep-ihm-api/**)",
+      "Write(//c/Projetos/gclabs/tep-historian/**)",
+      "Write(//c/Projetos/gclabs/tep-ihm/**)"
+    ]
+  }
+}

@@ -17,9 +17,12 @@ Isto muda conforme eu avanço.
 
 | Repositório | Papel |
 | --- | --- |
-| [`tep-ihm`](https://github.com/Green-Cinnamon-Labs/tep-ihm) | IHM web da planta; vai ser refeita em React |
+| [`tep-ihm-web`](https://github.com/Green-Cinnamon-Labs/tep-ihm-web) | IHM web em React |
+| [`tep-ihm-api`](https://github.com/Green-Cinnamon-Labs/tep-ihm-api) | Backend da IHM em Node |
 | [`tep-historian`](https://github.com/Green-Cinnamon-Labs/tep-historian) | Historiador em Python (também serve o [Gajeiro](https://github.com/Green-Cinnamon-Labs/spec-gajeiro)) |
-| backend Node | ainda não existe |
+| [`tep-ihm`](https://github.com/Green-Cinnamon-Labs/tep-ihm) | IHM v1 (FastAPI e JS puro), referência durante o porte |
+
+As issues ficam em cada repositório e no [board](https://github.com/orgs/Green-Cinnamon-Labs/projects/12) (Linha = Hefesto). O jeito de trabalhar está em [`WORKFLOW.md`](WORKFLOW.md).
 
 ## Livro
 
