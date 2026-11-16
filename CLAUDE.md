@@ -7,6 +7,15 @@ Leia `WORKFLOW.md` antes de qualquer coisa.
 - Todo conceito novo vem com a genealogia: quando surgiu, que problema o forçou a existir, o que ele corrige da solução anterior. Nunca regras soltas.
 - O livro (`book/`) é ditado pelo usuário. Não escreva nada nele sem um pedido explícito.
 
+## Um chat por issue
+
+O usuário abre um chat para cada issue e um só para o livro. Ao começar o chat de uma issue:
+
+1. Leia a issue e os comentários (`gh issue view <n> -R Green-Cinnamon-Labs/<repo> --comments`) e as issues citadas em "Depende de".
+2. Descubra em que versão o usuário está: os itens marcados no checklist, os comentários de versão, a branch da issue e os commits dela (`git -C ../<repo> log --oneline`).
+3. Se faltar alguma dependência, avise antes de começar.
+4. Comece a guiar pela próxima versão não marcada.
+
 ## Livro
 
 - LaTeX em `book/`. MiKTeX e latexmk estão instalados. Depois de cada mudança, recompile o PDF e atualize o índice em `book/README.md`.
