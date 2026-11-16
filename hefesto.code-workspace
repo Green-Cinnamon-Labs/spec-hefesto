@@ -1,0 +1,10 @@
+{
+  "folders": [
+    { "name": "spec-hefesto (hub e livro)", "path": "." },
+    { "name": "tep-ihm-web", "path": "../tep-ihm-web" },
+    { "name": "tep-ihm-api", "path": "../tep-ihm-api" },
+    { "name": "tep-historian", "path": "../tep-historian" },
+    { "name": "tep-ihm (v1, consulta)", "path": "../tep-ihm" }
+  ],
+  "settings": {}
+}
