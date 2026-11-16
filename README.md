@@ -2,7 +2,7 @@
 
 > Hefesto, o deus grego da forja, construía autômatos para trabalhar ao seu lado.
 
-Linha de pesquisa do [Green Cinnamon Labs](https://github.com/Green-Cinnamon-Labs) sobre aplicações de supervisão industrial: front em React, backend em Node, microsserviços em Python e deploy na AWS, construídos sobre a [planta compartilhada do Tennessee Eastman](https://github.com/Green-Cinnamon-Labs/spec-tennessee-eastman).
+Linha de pesquisa do [Green Cinnamon Labs](https://github.com/Green-Cinnamon-Labs) sobre aplicações de supervisão industrial: front em React, backend em Node, microsserviços em Python e deploy na AWS, construídos sobre a [planta compartilhada do Tennessee Eastman](https://github.com/Batchuka/spec-tennessee-eastman).
 
 ## O que sei hoje
 
