@@ -41,3 +41,17 @@ Ficam todos lado a lado em `C:\Projetos\gclabs\`:
 | `tep-ihm-api` | backend em Node |
 | `tep-historian` | historian em Python |
 | `tep-ihm` | IHM v1, só para consulta durante o porte |
+
+## Subir a planta
+
+A planta não é desta linha: o `tep-plant` (sobre o `monjolo`) é da linha Monjolo e se desenvolve no workspace `spec-monjolo/monjolo.code-workspace`. Aqui ela só roda, num terminal à parte:
+
+```powershell
+cd C:\Projetos\gclabs\tep-plant
+cargo run --release --bin tep-plant --features opcua
+```
+
+- Endpoint: `opc.tcp://127.0.0.1:4840/tep/server/`.
+- Sem `--features opcua` a simulação roda, mas não abre o servidor OPC UA.
+- O `tep-plant` depende do `monjolo` por caminho (`../monjolo`), então os dois precisam estar clonados lado a lado.
+- A primeira compilação demora; as seguintes, não.
