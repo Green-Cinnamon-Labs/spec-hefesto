@@ -1,6 +1,6 @@
 # 0001. Arquitetura alvo da IHM
 
-Status: proposta · Issue: #3
+Status: substituída pelo [ADR 0002](0002-ihm-conexao-direta.md) · Issue: #3
 
 ## Contexto
 

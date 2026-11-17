@@ -26,7 +26,7 @@ As issues ficam em cada repositório e no [board](https://github.com/orgs/Green-
 
 ## Arquitetura
 
-Decisões em [`docs/adr/`](docs/adr/). A arquitetura alvo da IHM está no [ADR 0001](docs/adr/0001-arquitetura-ihm.md).
+Decisões em [`docs/adr/`](docs/adr/). A arquitetura alvo da IHM está no [ADR 0002](docs/adr/0002-ihm-conexao-direta.md), que substitui o [ADR 0001](docs/adr/0001-arquitetura-ihm.md) (broker MQTT).
 
 Hoje, cada cliente abre sua própria sessão OPC UA com a planta:
 
@@ -46,19 +46,16 @@ Alvo:
 
 ```mermaid
 flowchart LR
-    planta["Planta<br/>servidor OPC UA + publisher MQTT opcional"]
-    operator["operator k8s / ferramentas OPC"]
-    broker["Mosquitto"]
+    planta["Planta<br/>servidor OPC UA"]
     api["tep-ihm-api (BFF)"]
     web["tep-ihm-web"]
     hist["tep-historian"]
+    operator["operator k8s"]
 
-    planta <-->|"OPC UA: leitura e controle"| operator
-    planta -->|"MQTT (opcional)"| broker
-    broker --> api
-    broker --> hist
+    api <-->|"OPC UA: leitura e escrita"| planta
+    hist -->|OPC UA| planta
     api -->|"WebSocket/SSE"| web
-    api -.->|"OPC UA: escrita"| planta
+    operator -->|consulta| hist
 ```
 
 ## Livro
