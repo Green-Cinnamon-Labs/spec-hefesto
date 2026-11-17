@@ -1,6 +1,6 @@
 # 0001. Arquitetura alvo da IHM
 
-Status: proposta · Issue: #3
+Status: aceita · Issue: #3
 
 ## Contexto
 
