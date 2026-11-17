@@ -1,0 +1,80 @@
+\chapter*{How to Read This Book}
+\addcontentsline{toc}{chapter}{How to Read This Book}
+\markboth{HOW TO READ THIS BOOK}{HOW TO READ THIS BOOK}
+
+Each chapter starts from a real situation, the kind you find on a whiteboard
+when a system is about to grow, and asks why the technologies we reach for are
+shaped the way they are.
+
+The answer is always historical. No idea in computing showed up because it was
+elegant. Each one was forced by a pain somebody had, at a certain time and
+place. It fixed something its predecessor got wrong, and it brought new costs of
+its own. If you know that lineage, you know when to use the idea and when to run
+from it. If you only know the rule, you'll apply it where the pain doesn't exist.
+
+\section*{Two kinds of boxes}
+
+Stories and concepts are kept apart, so you always know which one you're
+reading.
+
+\begin{history}{year \textperiodcentered{} place}
+An amber box tells a story: who did it, when, and what forced the idea into
+existence. Everything in it is real: the people, the dates and the problems.
+No invented incidents.
+\end{history}
+
+\begin{concept}{name}
+A blue box defines an idea you'll need again. It always ends the same way:
+
+\textbf{What it fixes:} the pain that made the idea worth having.
+
+\textbf{What it costs:} what you give up by using it.
+\end{concept}
+
+The text between the boxes is the argument that connects them.
+
+\section*{Diagrams}
+
+Colors in diagrams are roles, not decoration. A color means the same thing in
+every figure of the book.
+
+\begin{center}
+\begin{tikzpicture}
+  \matrix[column sep=6mm, row sep=4mm, nodes={anchor=center}] {
+    \node[hf/source, minimum width=26mm] {source}; &
+    \node[hf/note, anchor=west, text width=95mm, align=left] {where the data comes from: a plant, a device, a sensor}; \\
+    \node[hf/reader, minimum width=26mm] {reader}; &
+    \node[hf/note, anchor=west, text width=95mm, align=left] {a program that consumes data: a screen, a client, an app}; \\
+    \node[hf/store, minimum width=26mm] {store}; &
+    \node[hf/note, anchor=west, text width=95mm, align=left] {where data is kept: a historian, a database, a copy}; \\
+    \node[hf/bus, minimum width=26mm] {middle}; &
+    \node[hf/note, anchor=west, text width=95mm, align=left] {something that sits between: a broker, a standard, a bus}; \\
+    \draw[hf/ask] (-13mm,0) -- (13mm,0); &
+    \node[hf/note, anchor=west, text width=95mm, align=left] {asks: a request, a poll}; \\
+    \draw[hf/answer] (-13mm,0) -- (13mm,0); &
+    \node[hf/note, anchor=west, text width=95mm, align=left] {answers a request}; \\
+    \draw[hf/push] (-13mm,0) -- (13mm,0); &
+    \node[hf/note, anchor=west, text width=95mm, align=left] {pushes: sent without being asked}; \\
+    \draw[hf/save] (-13mm,0) -- (13mm,0); &
+    \node[hf/note, anchor=west, text width=95mm, align=left] {keeps: written to storage}; \\
+    \draw[hf/pain, dashed] (-13mm,0) -- (13mm,0); &
+    \node[hf/note, anchor=west, text width=95mm, align=left, text=hfAlert] {a cost, a pain, or something forbidden}; \\
+  };
+\end{tikzpicture}
+\end{center}
+
+\section*{Exact facts, firm opinions}
+
+This isn't a scientific book, and it doesn't pretend to be one.
+
+The history is checked. When the book says who did something and when, that's
+what happened.
+
+The opinions are another matter. When something is a mistake, the book says
+it's a mistake. When something is useless, it says \emph{useless}, not ``of
+limited value in some contexts''. Sometimes that will be unfair or imprecise, and
+we accept that.
+
+A reader who leaves with a position can argue with it, refine it, or throw it
+away. A reader who leaves with ``it depends'' has nothing to hold. Between being
+precise and leaving you with a position, this book prefers to give you a position.

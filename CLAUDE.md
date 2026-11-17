@@ -21,6 +21,8 @@ O usuário abre um chat para cada issue e um só para o livro. Ao começar o cha
 - LaTeX em `book/`. MiKTeX e latexmk estão instalados. Depois de cada mudança, recompile o PDF e atualize o índice em `book/README.md`.
 - História real: pessoas, datas, o problema que forçou cada ideia. Nada de histórias inventadas nem de incidentes de produção fictícios.
 - Nunca o código literal do projeto (arquivos, linhas, versões de issue, soluções). O livro é uma conversa paralela sobre por que as tecnologias são como são.
+- Fatos exatos, opiniões categóricas. A história (pessoas, datas, o problema que forçou a ideia) tem que estar certa. Na análise, diga o que soa, sem medo e sem ressalvas: "isso é inútil", "isso é um erro". O livro não é científico; prefira pecar pela imprecisão a deixar o leitor sem posição, porque o objetivo é transferir entendimento.
+- Nada de tom irônico nem de frases de efeito com cara de texto de IA: "That isn't X. It's Y.", aforismos curtos em sequência, fechamentos de impacto. Diga a coisa direto, numa frase simples.
 - Tom leve. Todo exemplo de código que entrar no livro tem que ser rodado antes.
 - Arquivos `.tex` se editam com o Edit, não com sed ou printf, por causa das barras invertidas.
 - Seja objetivo: sem recaps e sem listas de próximos passos.

@@ -1,0 +1,729 @@
+\chapter{Who Gets to Talk to the Plant?}
+
+Picture a chemical plant with one data server sitting next to it. Two programs
+want to know what the plant is doing. One draws screens for the operators. The
+other keeps history for the engineers. Each opens its own connection, asks for
+the same numbers a couple of times per second, and stores what it gets in its
+own place. Neither knows the other exists.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[hf/source, minimum width=36mm] (srv) {Plant data server};
+  \node[hf/reader, minimum width=32mm, below left=16mm and 4mm of srv] (hmi) {Operator screens};
+  \node[hf/reader, minimum width=32mm, below right=16mm and 4mm of srv] (his) {History program};
+  \node[hf/store, below=9mm of hmi] (s1) {own copy};
+  \node[hf/store, below=9mm of his] (s2) {own copy};
+
+  \draw[hf/ask] (hmi.north) -- node[hf/note, left=2pt] {asks for everything,\\twice a second} (srv.south west);
+  \draw[hf/ask] (his.north) -- node[hf/note, right=2pt] {asks for everything,\\twice a second} (srv.south east);
+  \draw[hf/save] (hmi) -- (s1);
+  \draw[hf/save] (his) -- (s2);
+  \draw[hf/pain, dashed] (hmi.east) -- node[hf/note, below=2pt, text=hfAlert] {unaware of\\each other} (his.west);
+\end{tikzpicture}
+\caption{The situation: two readers, one source, two copies of the truth.}
+\end{figure}
+
+Nothing here is broken. Both programs work. But there are now two copies of the
+truth, two loads on the server, and two different answers to ``what happened at
+three in the morning?''. Before adding a third program, it is worth asking a
+question that industry has been answering, and re-answering, for more than fifty
+years: \emph{who gets to talk to the plant?}
+
+This chapter follows that question from relay cabinets to message brokers. Each
+answer was forced by a specific pain, and each one fixed something the previous
+answer got wrong.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.23cm]
+  \draw[black!40, line width=1pt, -{Stealth[length=2mm]}] (0,0) -- (61,0);
+  \foreach \y in {1970,1980,...,2020} {
+    \draw[black!40] (\y-1965,0.08) -- (\y-1965,-0.08);
+  }
+  % year / height (+ above, - below) / color / label
+  \foreach \yr/\h/\c/\t in {
+      1968/0.5/hfSource/{\textbf{1968}\\first PLC},
+      1979/-0.5/hfSource/{\textbf{1979}\\Modbus},
+      1980/1.5/hfStore/{\textbf{1980}\\OSIsoft and PI},
+      1990/0.5/hfSource/{\textbf{1990}\\Tennessee Eastman},
+      1996/-0.5/hfBus/{\textbf{1996}\\OPC DA},
+      1999/1.5/hfBus/{\textbf{1999}\\MQTT},
+      2000/-1.5/hfStore/{\textbf{2000}\\ISA-95},
+      2008/0.5/hfBus/{\textbf{2008}\\OPC UA},
+      2014/-0.5/hfBus/{\textbf{2014}\\MQTT at OASIS},
+      2021/0.5/hfStore/{\textbf{2021}\\AVEVA buys OSIsoft}} {
+    \fill[\c] (\yr-1965,0) circle (2.2pt);
+    \draw[\c!70] (\yr-1965,0) -- (\yr-1965,\h);
+    \pgfmathsetmacro\up{\h>0 ? 1 : 0}
+    \ifdim\up pt>0pt
+      \node[font=\sffamily\scriptsize, text width=19mm, align=center, anchor=south, inner sep=2pt] at (\yr-1965,\h) {\t};
+    \else
+      \node[font=\sffamily\scriptsize, text width=19mm, align=center, anchor=north, inner sep=2pt] at (\yr-1965,\h) {\t};
+    \fi
+  }
+\end{tikzpicture}
+\caption{The milestones in this chapter. Gray: devices and plants. Purple:
+something in the middle. Green: memory.}
+\end{figure}
+
+\section{A plant that never existed}
+
+The plant in this story is fictional, and its fictionality is a piece of history
+in its own right.
+
+\begin{history}{1990 \textperiodcentered{} Kingsport, Tennessee}
+James J.\ Downs and Ernest F.\ Vogel, two engineers at Eastman Chemical Company,
+presented a simulated process at an AIChE meeting. The paper came out in 1993 in
+\emph{Computers \& Chemical Engineering} under the title ``A plant-wide
+industrial process control problem''.
+
+The problem they were solving was social rather than chemical. Academics who
+studied control had nothing realistic to test on, and companies would never
+publish the model of a real plant, because that model \emph{is} the company's
+know-how. So Eastman built a plausible plant with the chemistry disguised:
+components are called A to H, and the reactions are just ``gas-liquid,
+exothermic''.
+\end{history}
+
+The Tennessee Eastman Process has a reactor, a condenser, a vapor-liquid
+separator, a recycle compressor and a stripper. It exposes 41 measured variables
+and 12 manipulated ones, plus 20 disturbances you can switch on to make life
+harder. It is open-loop unstable: leave it without control and it drifts until
+its safety limits shut it down. That made it the standard benchmark for
+plant-wide control, fault detection and, decades later, machine learning on
+process data.
+
+There's one detail worth keeping for later. Not every measurement moves at the
+same pace. Most are continuous, but the composition analyzers report only every
+0.1 or 0.25 hours of plant time, after a dead time. A program that asks for
+``everything'' twice a second will mostly hear the same answers repeated, and
+that will matter later in the chapter.
+
+\section{The oldest way to know is to ask}
+
+\begin{history}{1968--1979 \textperiodcentered{} Detroit and Massachusetts}
+General Motors' Hydra-Matic division was tired of rewiring relay cabinets every
+time a production line changed. In 1968 it wrote a specification for an
+electronic replacement. Dick Morley's team at Bedford Associates answered with
+the Modicon~084, and the programmable logic controller (PLC) was born.
+
+PLCs soon needed to talk to something above them. In 1979, Modicon published
+\textbf{Modbus}: on a serial line, one master asks and the slaves answer. In
+2020, the Modbus Organization renamed the roles to client and server, but the
+rule is the same.
+\end{history}
+
+Under Modbus, a slave never speaks unless spoken to. If you want to know a
+temperature, you ask for register 40001, and if you want to know it again, you
+ask again.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=-0.72cm]
+  \node[hf/reader, minimum width=22mm] (m)  at (0,0)   {Master};
+  \node[hf/source, minimum width=22mm] (s1) at (4.8,0) {Slave 1};
+  \node[hf/source, minimum width=22mm] (s2) at (9.6,0) {Slave 2};
+  \foreach \x in {0,4.8,9.6} \draw[hf/lifeline] (\x,0.7) -- (\x,8.6);
+
+  \draw[hf/ask]    (0,1.4) -- node[hf/note, above] {read 40001} (4.8,1.4);
+  \draw[hf/answer] (4.8,2.2) -- node[hf/note, above] {21.4} (0,2.2);
+  \draw[hf/ask]    (0,3.2) -- node[hf/note, above, pos=0.3] {read 40001} (9.6,3.2);
+  \draw[hf/answer] (9.6,4.0) -- node[hf/note, above, pos=0.7] {57.0} (0,4.0);
+  \draw[hf/ask]    (0,5.2) -- node[hf/note, above] {read 40001} (4.8,5.2);
+  \draw[hf/answer] (4.8,6.0) -- node[hf/note, above] {21.4 \emph{again}} (0,6.0);
+  \draw[hf/ask]    (0,7.0) -- node[hf/note, above, pos=0.3] {read 40001} (9.6,7.0);
+  \draw[hf/answer] (9.6,7.8) -- node[hf/note, above, pos=0.7] {57.0 \emph{again}} (0,7.8);
+
+  \node[hf/note, anchor=west] at (10.0,4.5) {time\\$\downarrow$};
+\end{tikzpicture}
+\caption{Polling on a Modbus line. The master asks in turn. Every answer costs a
+round trip, even when nothing changed.}
+\end{figure}
+
+\begin{concept}{Polling}
+The reader asks the source on a schedule, and the source answers and forgets.
+The source is passive. It doesn't know who is interested or how often.
+
+\textbf{What it fixes:} order on a shared wire. With one party starting every
+conversation, nothing collides.
+
+\textbf{What it costs:} work grows with readers $\times$ frequency, whether or
+not anything changed. Fast changes between two questions are lost, and slow
+values get read over and over.
+\end{concept}
+
+Polling made sense at the time. On a shared serial wire with no collision
+handling, it is what keeps the line orderly. It is the native shape of the field
+bus.
+
+It also leaves a mark that's still with us: the source is passive. If a second
+program wants the same temperature, it has to ask too. On a Modbus line it
+can't, because there is only one master, so the second program has to go
+through the first.
+
+\section{Every screen with its own drivers}
+
+During the 1980s, operator screens moved from dedicated consoles to ordinary
+PCs. HMI and SCADA packages appeared, and each of them had to read from PLCs
+made by many vendors, each with its own protocol.
+
+\begin{concept}{The N$\times$M problem}
+When N programs need to talk to M kinds of device and each pair needs its own
+code, you write N$\times$M pieces of code. If you put a standard interface in
+the middle, each side implements it once, and the count drops to N$+$M.
+\end{concept}
+
+Every HMI vendor wrote a driver for every device family. Ten HMIs and twenty
+device families meant two hundred drivers, written separately and often badly,
+and all of them polling.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \begin{scope}
+    \foreach \i/\n in {0/A,1/B,2/C} {
+      \node[hf/reader, minimum width=15mm] (h\i) at (0,-1.2*\i) {HMI \n};
+      \node[hf/source, minimum width=15mm] (d\i) at (3.6,-1.2*\i) {PLC \the\numexpr\i+1\relax};
+    }
+    \foreach \i in {0,1,2} \foreach \j in {0,1,2}
+      \draw[hf/pain, draw=hfAlert!70] (h\i.east) -- (d\j.west);
+    \node[hf/note, text=hfAlert] at (1.8,-3.3) {N$\times$M $=$ 9 drivers};
+  \end{scope}
+  \begin{scope}[xshift=7.2cm]
+    \foreach \i/\n in {0/A,1/B,2/C} {
+      \node[hf/reader, minimum width=15mm] (k\i) at (0,-1.2*\i) {HMI \n};
+      \node[hf/source, minimum width=15mm] (e\i) at (4.4,-1.2*\i) {PLC \the\numexpr\i+1\relax};
+    }
+    \node[hf/bus, minimum height=34mm, minimum width=10mm] (opc) at (2.2,-1.2) {\rotatebox{90}{OPC interface}};
+    \foreach \i in {0,1,2} {
+      \draw[hf/flow, draw=hfBus] (k\i.east) -- (k\i.east -| opc.west);
+      \draw[hf/flow, draw=hfBus] (e\i.west -| opc.east) -- (e\i.west);
+    }
+    \node[hf/note, text=hfBus] at (2.2,-3.3) {N$+$M $=$ 6 implementations};
+  \end{scope}
+\end{tikzpicture}
+\caption{Left: every HMI talks to every device in its own way. Right: both sides
+speak one standard.}
+\end{figure}
+
+\begin{history}{1995--1996 \textperiodcentered{} The OPC task force}
+A group of automation vendors, among them Fisher-Rosemount, Intellution, Opto~22
+and Rockwell Software, got together with Microsoft to fix the driver mess. They
+released the \textbf{OPC Data Access} specification in 1996. At the time, OPC
+stood for \emph{OLE for Process Control}, and it was built on Microsoft's COM and
+DCOM.
+\end{history}
+
+COM and DCOM are names that only make sense next to the names that came before
+them, so it's worth a short detour through Windows.
+
+\begin{history}{1987--1996 \textperiodcentered{} Redmond, and one HMI company}
+\textbf{1987, DDE.} Windows~2.0 brought \emph{Dynamic Data Exchange}, the first
+way for two Windows programs to swap data. ``Dynamic'' meant the link stayed
+alive: change a cell in Excel and the other program got the new value. An HMI
+company, Wonderware, wrote \emph{NetDDE} to carry DDE across a network, and
+Microsoft licensed it for Windows for Workgroups. Before OPC, this is how many
+HMIs got their numbers.
+
+\textbf{1990, OLE.} \emph{Object Linking and Embedding} is named after its two
+tricks: \emph{embed} a copy of an Excel chart inside a Word document, or
+\emph{link} to the file so the chart follows its changes. Double-click the chart
+and Excel opens inside Word to edit it. Now Word had to \emph{call Excel's code},
+not just receive a value.
+
+\textbf{1993, COM.} For OLE~2, Microsoft pulled the generic machinery out and
+gave it its own name, the \emph{Component Object Model}. \emph{Component}: a
+binary piece that programs can use without having been compiled with it.
+\emph{Object}: something with methods behind interfaces. \emph{Model}: a set of
+rules, not a library.
+
+\textbf{1996, DCOM.} First called \emph{Network OLE}, it shipped with Windows
+NT~4.0 as \emph{Distributed COM}: the same calls, to an object on another
+machine.
+
+So when the vendors called their standard \emph{OLE for Process Control}, they
+meant: use the Windows machinery for one program to call another, and agree on
+the interfaces for reading plant values.
+\end{history}
+
+\begin{concept}{COM, the component object model}
+An \emph{interface} is a contract: a named list of methods. Each interface is
+identified by a \emph{GUID}, a 128-bit \emph{globally unique identifier}
+(Microsoft's name for the UUIDs of the DCE world, more on DCE below). The
+Windows registry maps each GUID to the DLL or program that implements it.
+
+Every COM object implements one interface called \texttt{IUnknown}. It's named
+that because, when you get hold of an object, you don't yet know what it is. You
+ask it, through \texttt{QueryInterface}: ``do you speak \texttt{IOPCServer}?''.
+If the answer is yes, you get that interface and call its methods.
+
+\textbf{What it fixes:} programs from different companies, in different
+languages, call each other without sharing source code.
+
+\textbf{What it costs:} everything rests on the Windows registry and the Windows
+binary format.
+\end{concept}
+
+DCOM adds one thing on top of COM: the object can live on another machine, and
+the caller doesn't notice. That trick is older than Windows.
+
+\begin{history}{1976--1994 \textperiodcentered{} The remote procedure call}
+In 1976, James E.\ White's RFC~707 proposed that programs share resources over
+a network as if they were calling procedures. In 1984, Andrew Birrell and Bruce
+Nelson at Xerox PARC published ``Implementing Remote Procedure Calls'', which
+showed how to make a call to another machine look like an ordinary local call.
+Sun built its RPC under NFS. The Open Software Foundation's \emph{Distributed
+Computing Environment} (DCE) standardized another one in the early 1990s, and
+Microsoft adopted it as MSRPC, the layer under DCOM.
+
+In 1994, Jim Waldo and colleagues at Sun Labs wrote ``A Note on Distributed
+Computing''. They argued that pretending a remote call is local is a mistake,
+because a remote call can be slow, fail halfway, or leave you not knowing
+whether it ran.
+\end{history}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[hf/reader, minimum width=24mm] (hmi) {HMI};
+  \node[hf/base, draw=hfReader, fill=white, minimum width=24mm, below=10mm of hmi] (px) {proxy};
+  \node[hf/base, draw=hfSource, fill=white, minimum width=24mm, right=62mm of px] (st) {stub};
+  \node[hf/source, minimum width=24mm, above=10mm of st] (srv) {OPC server};
+
+  \begin{scope}[on background layer]
+    \node[draw=black!30, rounded corners=3pt, inner xsep=9mm, inner ysep=4mm, fit=(hmi)(px),
+          label={[hf/note]below:machine A}] {};
+    \node[draw=black!30, rounded corners=3pt, inner xsep=9mm, inner ysep=4mm, fit=(st)(srv),
+          label={[hf/note]below:machine B}] {};
+  \end{scope}
+
+  \draw[hf/ask] (hmi) -- node[hf/note, left] {\texttt{Read(...)}} (px);
+  \draw[hf/push] (px) -- node[hf/note, above] {RPC over the network} node[hf/note, below] {port 135, then a dynamic port} (st);
+  \draw[hf/ask] (st) -- node[hf/note, right] {\texttt{Read(...)}} (srv);
+\end{tikzpicture}
+\caption{A DCOM call. The HMI calls a local proxy that looks exactly like the
+server. The proxy packs the arguments and sends them, and a stub on the other
+machine unpacks them and makes the real call.}
+\end{figure}
+
+\begin{concept}{Remote procedure call}
+The caller calls a local \emph{proxy} with the same signature as the real
+object. The proxy \emph{marshals} the arguments, packing them into bytes, and
+sends them. On the other machine, a \emph{stub} unpacks them, calls the real
+object, and sends the result back the same way.
+
+\textbf{What it fixes:} the network code disappears from the program. Calling a
+server on another machine looks like calling a function.
+
+\textbf{What it costs:} the network doesn't disappear. The call can hang, fail
+halfway or time out, and the code that looked local has to handle all of it.
+\end{concept}
+
+Back to OPC. The device vendor writes \emph{one} OPC server, and any OPC client
+can read from it. OPC DA also brought something Modbus didn't have, the subscription. A client
+could create a \emph{group} of items with an update rate, and the server would
+call the client back when values changed. The server still polled the device
+underneath, but it did so once, on behalf of everyone.
+
+The price was the foundation it stood on. COM and DCOM meant Windows only. DCOM
+across a network meant fighting firewalls: it first asks port 135 where the
+object lives, then talks on a port chosen at run time. Permissions lived in a
+tool called \texttt{dcomcnfg}, per machine and per user, and a wrong combination
+failed silently. A whole profession of ``DCOM configuration'' grew up around it.
+
+Microsoft moved on to .NET in 2002, and DCOM became legacy. Between 2021 and
+2023, Microsoft rolled out a security hardening of DCOM, and when it was
+enforced, OPC Classic connections stopped working in plants that hadn't
+prepared. By then the industry had long since started building the successor.
+
+\section{OPC UA: the same idea without Windows}
+
+\begin{history}{2008 \textperiodcentered{} OPC Unified Architecture}
+Work on a successor started in the early 2000s. In 2008, the OPC Foundation
+released \textbf{OPC UA}, later standardized as IEC~62541. In 2011, the
+foundation kept the letters but changed what they stood for: \emph{Open Platform
+Communications}.
+\end{history}
+
+UA kept what worked in OPC and rebuilt the rest. It has its own binary protocol
+over TCP, so it can run on Linux, inside a PLC, or in a container. It has
+security built in. It also has a real information model: the server exposes
+typed nodes in folders, not just a flat list of tags.
+
+\begin{concept}{Subscription}
+Instead of asking for values, the reader tells the source what it cares about
+and how often, and the source reports changes. In OPC UA, a client creates a
+\emph{subscription} with a \emph{publishing interval} and adds \emph{monitored
+items} to it. Each item has a \emph{sampling interval} and, optionally, a
+\emph{deadband}: a change smaller than that is not worth reporting.
+
+\textbf{What it fixes:} the source does the sampling once and sends only what
+changed, so a slow value costs almost nothing.
+
+\textbf{What it costs:} the source now keeps state per client, and that state
+has limits.
+\end{concept}
+
+How UA delivers those changes is a neat trick. UA is a request/response
+protocol, so the server can't really speak first. Instead, the client sends
+\texttt{Publish} requests \emph{in advance}, and the server holds them until it
+has notifications to send. When it answers one, the client sends another.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=-0.75cm]
+  \node[hf/reader, minimum width=24mm] at (0,0) {Client};
+  \node[hf/source, minimum width=24mm] at (7,0) {Server};
+  \draw[hf/lifeline] (0,0.7) -- (0,7.4);
+  \draw[hf/lifeline] (7,0.7) -- (7,7.4);
+
+  % held requests
+  \fill[hfBus!25] (6.88,1.6) rectangle (7.0,3.9);
+  \fill[hfBus!45] (7.0,2.6) rectangle (7.12,6.6);
+
+  \draw[hf/ask] (0,1.2) -- node[hf/note, above, sloped] {Publish \#1} (7,1.6);
+  \draw[hf/ask] (0,2.2) -- node[hf/note, above, sloped] {Publish \#2} (7,2.6);
+  \node[hf/note, anchor=west] at (7.3,2.1) {both held:\\nothing to say yet};
+
+  \node[hf/note, anchor=west, text=hfBus] at (7.3,3.6) {a value changes};
+  \draw[hf/push] (7,3.9) -- node[hf/note, above, sloped] {answer \#1: the change} (0,4.3);
+  \draw[hf/ask] (0,4.9) -- node[hf/note, above, sloped] {Publish \#3} (7,5.3);
+  \node[hf/note, anchor=west, text=hfBus] at (7.3,6.3) {another change};
+  \draw[hf/push] (7,6.6) -- node[hf/note, above, sloped] {answer \#2} (0,7.0);
+\end{tikzpicture}
+\caption{Push built out of requests. The client keeps a few \texttt{Publish}
+requests waiting at the server, so the server always has one to answer when
+something changes.}
+\end{figure}
+
+That is push built out of polling, the same move the web would make with long
+polling years later.
+
+So a UA server can serve many clients efficiently, but only if they subscribe.
+If every client simply reads the whole address space on a timer, the server does
+the full work once per client per tick, and the analyzer that changes every six
+minutes of plant time gets read a few thousand times in between. Embedded UA
+servers also cap the number of sessions and subscriptions, sometimes to only a
+handful. Every new reader that goes straight to the source uses up capacity of the
+server, and nobody keeps track of how much is left.
+
+\section{The plant's memory}
+
+Control systems were built to control, not to remember. A distributed control
+system kept a short trend, perhaps hours, perhaps a few days. But engineers
+wanted months, to compare this summer with last summer, to find the slow drift
+before the failure, or to answer an auditor.
+
+\begin{history}{1980 \textperiodcentered{} OSIsoft}
+J.\ Patrick Kennedy founded Oil Systems, Inc., the company that became
+\textbf{OSIsoft}, and built the \textbf{PI System}, short for \emph{Plant
+Information}. PI defined the product category: the \emph{process historian}, a
+time-series database built for plants before ``time-series database'' was a
+phrase. In 2021, AVEVA bought OSIsoft.
+\end{history}
+
+A historian has to keep years of data from thousands of signals, and that runs
+into a wall of arithmetic. Take a plant with 100{,}000 tags, each read once per
+second:
+\[
+  100{,}000 \times 86{,}400 \times 365 \approx 3 \text{ trillion values a year.}
+\]
+At about 16 bytes each (timestamp, value, quality), that's around 50 terabytes a
+year. When PI was born, a hard disk held tens of megabytes. Disks are cheap now,
+but reading 50 terabytes to draw a one-month trend is still slow.
+
+And almost all of it is repetition. A tank temperature sits at 80.0\,\textdegree
+C for hours. Storing ``80.0'' 3{,}600 times an hour teaches nobody anything.
+Storing a value that didn't change adds nothing. Historians act on that at two
+points: before a value travels, and before it's written.
+
+\begin{concept}{Exception reporting}
+The collector sends a value only when it moves more than a \emph{deadband} away
+from the last value it sent. With a deadband of 0.5\,\textdegree C, a tank
+wandering between 79.8 and 80.2 sends nothing at all.
+
+\textbf{What it fixes:} the network and the server stop carrying repetitions.
+
+\textbf{What it costs:} changes smaller than the deadband are gone for good. So
+the deadband is set per tag, close to the instrument's accuracy: a change
+smaller than the sensor's own error is noise, not information.
+\end{concept}
+
+\begin{concept}{Compression}
+Of the values that do arrive, the archive keeps only the ones needed to redraw
+the curve with an error below a tolerance $E$. If a temperature climbs in a
+straight ramp from 80 to 90 over an hour, two points are enough, the start and
+the end, because a ruler redraws the middle. It's like drawing a road on a map:
+you only mark the places where it bends.
+
+The best-known algorithm is \emph{swinging door trending}, which E.~H.\ Bristol
+at Foxboro patented in the 1980s and presented in 1990. At each new point it
+asks one question: starting from the last stored point, can a single straight
+line still pass within $E$ of every point since? Two ``doors'', hinged at $\pm
+E$ above and below the stored point, keep that answer cheap, so the algorithm
+never has to recheck old points. Each new point can only close the doors. When
+they pass parallel, the answer is no.
+
+\textbf{What it fixes:} the archive keeps the shape of the curve, not the
+repetitions.
+
+\textbf{What it costs:} the stored curve is exact only to within $E$. Between
+two stored points, all you know is the straight line.
+\end{concept}
+
+\begin{figure}[htbp]
+\centering
+\newcommand\swaxes{%
+  \draw[black!40, -{Stealth[length=1.6mm]}] (-0.15,0) -- (4.6,0);
+  \draw[black!40, -{Stealth[length=1.6mm]}] (0,-0.1) -- (0,3.9);
+}
+\newcommand\swpt[2]{\draw[hfStore, fill=white, line width=0.8pt] (#1,#2) circle (2.1pt);}
+\newcommand\swkeep[2]{\fill[hfStore] (#1,#2) circle (2.4pt);}
+\begin{tikzpicture}[x=0.9cm, y=0.75cm]
+  % 1. points arrive and still fit
+  \begin{scope}
+    \swaxes
+    \node[hf/note, anchor=south west] at (0,3.9) {value};
+    \node[hf/note, anchor=north east] at (4.6,0) {time};
+    \fill[hfStore!12] (0,1.5) -- (3,1.8) -- (0,0.5) -- cycle;
+    \draw[hfStore, dashed] (0,1.5) -- (3,1.8);
+    \draw[hfStore, dashed] (0,0.5) -- (3,1.8);
+    \node[hf/note, anchor=east] at (0,1.5) {$+E$};
+    \node[hf/note, anchor=east] at (0,0.5) {$-E$};
+    \draw[hfStore, densely dotted, line width=0.8pt] (0,1) -- (3,1.8);
+    \swkeep{0}{1} \swpt{1}{1.3} \swpt{2}{1.5} \swpt{3}{1.8}
+    \node[hf/note] at (2.1,-1.3) {\textbf{1.}\ Points arrive. One\\straight line still fits them all.};
+  \end{scope}
+  % 2. one point breaks the corridor
+  \begin{scope}[xshift=5.6cm]
+    \swaxes
+    \fill[hfStore!12] (0,1.5) -- (3,1.8) -- (0,0.5) -- cycle;
+    \draw[hfStore, dashed] (0,1.5) -- (3,1.8);
+    \draw[hfStore, dashed] (0,0.5) -- (3,1.8);
+    \draw[hfAlert, dashed, line width=0.8pt] (0,1) -- (4,3.4);
+    \draw[hfAlert, line width=0.6pt, {Bar[width=1.6mm]}-{Bar[width=1.6mm]}] (3.18,1.8) -- (3.18,2.8);
+    \node[hf/note, text=hfAlert, anchor=west] at (3.22,2.3) {$>E$};
+    \swkeep{0}{1} \swpt{1}{1.3} \swpt{2}{1.5} \swpt{3}{1.8}
+    \fill[hfAlert] (4,3.4) circle (2.4pt);
+    \node[hf/note] at (2.1,-1.3) {\textbf{2.}\ A line to the red point\\misses the others by more than $E$.};
+  \end{scope}
+  % 3. what gets written
+  \begin{scope}[xshift=11.2cm]
+    \swaxes
+    \draw[hfStore, line width=1pt] (0,1) -- (3,1.8);
+    \draw[hfStore, densely dotted, line width=0.8pt] (3,1.8) -- (4,3.4);
+    \draw[black!25, line width=0.6pt] (1,1.3) circle (2.1pt) (2,1.5) circle (2.1pt);
+    \swkeep{0}{1} \swkeep{3}{1.8}
+    \draw[hfStore, fill=white, line width=0.8pt] (4,3.4) circle (2.1pt);
+    \node[hf/note, anchor=north west] at (3.05,1.7) {stored,\\new anchor};
+    \node[hf/note] at (2.1,-1.3) {\textbf{3.}\ Two points written\\instead of four.};
+  \end{scope}
+\end{tikzpicture}
+\caption{Swinging door trending in three steps. Filled points are stored, hollow
+points are waiting, and gray points were dropped because the straight line
+between the stored ones redraws them within $E$.}
+\end{figure}
+
+We've met this idea before: the deadband on an OPC UA monitored item is
+exception reporting moved into the server, and MQTT will bring it back once
+more.
+
+Now look at a program that asks for everything twice a second and stores every
+answer. It does the exact opposite of what fifty years of historians learned. It
+keeps precisely the repetitions. An analyzer that changes every six minutes
+becomes seven hundred identical rows between one real value and the next, which
+is useless.
+
+The historian also changed who talks to the plant. Once it existed, it was the
+one program that already read everything, kept it, and knew how to answer
+questions about the past. Other programs started asking the historian instead of
+the plant. Security pushed in the same direction.
+
+\begin{history}{Early 1990s \textperiodcentered{} Purdue University}
+Theodore J.\ Williams and colleagues at Purdue published the \emph{Purdue
+Enterprise Reference Architecture}. Its layered model, from field devices at
+level~0 up to business systems at level~4, became the backbone of the ISA-95
+standard (first part in 2000) and of industrial network segmentation.
+\end{history}
+
+The rule that came out of Purdue is simple: business networks don't talk to the
+control network. The historian sits between them, and it's common to replicate
+it into a DMZ so that the office reads a copy and never touches the plant.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[y=1.4cm]
+  \foreach \y/\lvl/\desc/\shade in {
+      5/Level 4/business/6,
+      4/DMZ/between networks/14,
+      3/Level 3/operations/6,
+      2/Level 2/supervisory/6,
+      1/Level 1/control/6,
+      0/Level 0/process/6} {
+    \fill[black!\shade] (0,\y-0.47) rectangle (11,\y+0.47);
+    \node[font=\sffamily\small, anchor=west] at (0.2,\y) {\textbf{\lvl}\enspace{\color{black!60}\desc}};
+  }
+  \node[hf/reader, minimum height=7mm, minimum width=30mm] (off) at (6.6,5) {office apps};
+  \node[hf/store, minimum height=8mm, minimum width=30mm] (rep) at (6.6,4) {historian replica};
+  \node[hf/store, minimum height=8mm, minimum width=30mm] (his) at (6.6,3) {historian};
+  \node[hf/reader, minimum height=7mm, minimum width=30mm] (hmi) at (6.6,2) {HMI / SCADA};
+  \node[hf/source, minimum height=7mm, minimum width=30mm] (plc) at (6.6,1) {PLC / DCS};
+  \node[hf/source, minimum height=7mm, minimum width=30mm] (fld) at (6.6,0) {sensors, valves};
+
+  \draw[hf/flow, draw=hfSource] (fld) -- (plc);
+  \draw[hf/flow, draw=hfSource] (plc) -- (hmi);
+  \draw[hf/save] (hmi) -- (his);
+  \draw[hf/save] (his) -- node[hf/note, right=4mm] {replicate} (rep);
+  \draw[hf/ask] (off) -- (rep);
+
+  \draw[hf/pain, dashed, -{Stealth[length=2mm]}] (9.6,4.75) -- (9.6,2.25);
+  \node[text=hfAlert, font=\Large\bfseries] at (9.6,3.5) {$\times$};
+  \node[hf/note, text=hfAlert, anchor=west] at (9.75,3.5) {no};
+\end{tikzpicture}
+\caption{A Purdue-style plant. Data flows up, the office reads a copy in the DMZ,
+and nothing from level~4 reaches down into control.}
+\end{figure}
+
+\begin{concept}{The single reader}
+One program reads the plant on everyone's behalf, keeps what it reads, and
+becomes the \emph{source of truth} for everything above it. Everyone else asks
+that program.
+
+\textbf{What it fixes:} one connection to the plant, one copy of history, and
+one program responsible for the data.
+
+\textbf{What it costs:} that program is now on the live path. If it stops,
+everyone goes blind.
+\end{concept}
+
+\section{Stop asking, start listening}
+
+\begin{history}{1999 \textperiodcentered{} An oil pipeline and a satellite}
+Andy Stanford-Clark at IBM and Arlen Nipper at Arcom had to bring data from oil
+pipeline sensors into a SCADA system over satellite links. The links were billed
+by the byte and often dropped. Polling over that was absurd, since each question
+cost money and most answers were ``nothing changed''. They designed
+\textbf{MQTT}.
+
+It stayed niche for a decade. The open-source Mosquitto broker at the end of the
+2000s and the rise of the ``Internet of Things'' changed that. OASIS approved
+MQTT as a standard in 2014, and MQTT~5 followed in 2019.
+\end{history}
+
+\begin{concept}{Publish/subscribe}
+A producer \emph{publishes} messages on a \emph{topic} to a \emph{broker}, only
+when it has something to say. Consumers \emph{subscribe} to topics at the
+broker. Producer and consumers never address each other.
+
+\textbf{What it fixes:} the source publishes once, no matter how many readers
+there are, and readers come and go without the source noticing.
+
+\textbf{What it costs:} a broker to run, monitor and secure, and a message
+format that every side has to agree on.
+\end{concept}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[hf/source, minimum width=28mm] (dev) {pipeline sensor};
+  \node[hf/bus, minimum width=24mm, minimum height=12mm, right=26mm of dev] (brk) {broker};
+  \node[hf/reader, minimum width=26mm, right=26mm of brk, yshift=14mm] (r1) {SCADA};
+  \node[hf/reader, minimum width=26mm, right=26mm of brk] (r2) {dashboard};
+  \node[hf/store, minimum width=26mm, right=26mm of brk, yshift=-15mm] (r3) {archive};
+
+  \draw[hf/push] (dev) -- node[hf/note, above] {publish once} node[hf/note, below] {on change} (brk);
+  \draw[hf/push] (brk.east) -- (r1.west);
+  \draw[hf/push] (brk.east) -- (r2.west);
+  \draw[hf/push] (brk.east) -- (r3.west);
+  \node[hf/note, above=1mm of brk, text=hfBus] {fan-out};
+  \node[hf/note, below=1mm of brk] {topic\\\texttt{pipeline/7/pressure}};
+\end{tikzpicture}
+\caption{Publish/subscribe. The sensor doesn't know how many readers there are.}
+\end{figure}
+
+In industry, the idea has grown into the \emph{Unified Namespace}: one broker
+where every system publishes its current state, and everyone else subscribes.
+Other brokers carry the same idea, NATS being one, but the move is the same: a
+bus in the middle decouples producers from consumers.
+
+\section{Back to our two programs}
+
+Now look again at the two programs from the start of the chapter. Each of the
+three historical answers describes a different system.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[font=\sffamily\small]
+  \tikzset{app/.style={hf/reader, minimum width=10mm, minimum height=7mm, inner sep=2pt}}
+  % (a) everyone asks the source
+  \begin{scope}
+    \node[hf/source, minimum width=22mm] (pa) at (1.6,0) {plant};
+    \foreach \i in {0,1,2} {
+      \node[app] (a\i) at (0.4+1.2*\i,-2.6) {app};
+      \draw[hf/ask] (a\i.north) -- (pa.south);
+    }
+    \node[hf/note, text width=40mm] at (1.6,-3.6) {\textbf{1.}\ everyone asks\\the source};
+  \end{scope}
+  % (b) single reader
+  \begin{scope}[xshift=5.2cm]
+    \node[hf/source, minimum width=22mm] (pb) at (1.6,0) {plant};
+    \node[hf/store, minimum width=22mm, minimum height=8mm] (hb) at (1.6,-1.3) {historian};
+    \draw[hf/ask] (hb.north) -- (pb.south);
+    \foreach \i in {0,1,2} {
+      \node[app] (b\i) at (0.4+1.2*\i,-2.6) {app};
+      \draw[hf/ask] (b\i.north) -- (hb.south);
+    }
+    \node[hf/note, text width=40mm] at (1.6,-3.6) {\textbf{2.}\ one reader,\\everyone asks it};
+  \end{scope}
+  % (c) bus in the middle
+  \begin{scope}[xshift=10.4cm]
+    \node[hf/source, minimum width=22mm] (pc) at (1.6,0) {plant};
+    \node[hf/bus, minimum width=22mm, minimum height=7mm] (bc) at (1.6,-1.3) {bus};
+    \draw[hf/push] (pc.south) -- (bc.north);
+    \foreach \i in {0,1,2} {
+      \node[app] (c\i) at (0.4+1.2*\i,-2.6) {app};
+      \draw[hf/push] (bc.south) -- (c\i.north);
+    }
+    \node[hf/note, text width=40mm] at (1.6,-3.6) {\textbf{3.}\ a bus\\in the middle};
+  \end{scope}
+\end{tikzpicture}
+\caption{Three answers to ``who talks to the plant?''. Blue arrows ask, purple
+arrows push.}
+\end{figure}
+
+\begin{enumerate}
+  \item \textbf{Everyone asks the source.} This is the Modbus and early OPC
+        world. It's simple and has no extra parts. The cost is load on the
+        server that grows with every reader, a separate copy of the truth per
+        reader, and a source that can't tell who depends on it.
+  \item \textbf{One reader becomes the memory, and everyone asks it.} This is
+        the historian and Purdue world. It has one connection to the plant, one
+        copy of history and a clear owner. The cost is that the historian is now
+        on the live path.
+  \item \textbf{A bus in the middle.} This is the MQTT world. The source
+        publishes once, any number of readers subscribe, and nobody depends on
+        anybody's address. The cost is a broker to operate and a schema that
+        all sides have to agree on.
+\end{enumerate}
+
+None of these is the modern one that made the others obsolete. All three are
+still installed in plants today, often side by side. The question isn't which
+one is newest. It's which pain you have now: load on the source, disagreeing
+copies of history, or coupling between programs that should come and go freely.
+
+Our two programs have a little of each.
+
+\section*{Further reading}
+
+\begin{itemize}
+  \item J.~J.\ Downs and E.~F.\ Vogel, ``A plant-wide industrial process control
+        problem'', \emph{Computers \& Chemical Engineering} 17(3), 245--255,
+        1993.
+  \item OPC Foundation, ``OPC Foundation History'' (2024),
+        \url{https://opcfoundation.org/wp-content/uploads/2024/11/2024-11-12-OPCF-History.pdf}.
+  \item E.~H.\ Bristol, U.S.\ Patent 4,669,097, ``Data compression for display
+        and storage'', assigned to The Foxboro Company.
+  \item HiveMQ, ``MQTT Essentials, Part 1: Introducing MQTT'', on the origins
+        of MQTT.
+\end{itemize}

@@ -1,0 +1,411 @@
+\chapter{Talking to the Source}
+
+The last chapter ended with three ways to answer ``who talks to the plant?''.
+This chapter takes the first and simplest one: every program that needs the
+plant talks to it directly. Here that means two programs. The backend of the
+operator screen reads the plant and sends it commands. The historian reads the
+plant and keeps everything.
+
+``Everyone asks the source'' had a bad reputation in the last chapter, but the
+problem there was asking: polling, on a timer, for everything. Talking to the
+source directly can be done well, and this chapter is about how.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[hf/source, minimum width=30mm, minimum height=11mm] (pl) {plant\\{\footnotesize OPC UA server}};
+  \node[hf/reader, minimum width=30mm, right=34mm of pl, yshift=12mm] (bff) {screen backend};
+  \node[hf/store, minimum width=30mm, right=34mm of pl, yshift=-14mm] (hi) {historian};
+  \foreach \i/\dy in {1/9mm,2/0mm,3/-9mm} {
+    \node[hf/reader, minimum width=18mm, minimum height=6mm, right=16mm of bff, yshift=\dy] (b\i) {browser};
+    \draw[hf/push] (bff.east) -- (b\i.west);
+  }
+  \node[hf/reader, minimum width=30mm, right=16mm of hi] (sup) {supervisor};
+
+  \draw[hf/push] (pl.north east) -- node[hf/note, above, sloped] {subscription} ([yshift=1.5mm]bff.west);
+  \draw[hf/ask] ([yshift=-1.5mm]bff.west) -- node[hf/note, below, sloped] {commands} ([yshift=-2.5mm]pl.north east);
+  \draw[hf/push] (pl.south east) -- node[hf/note, below, sloped] {subscription} (hi.west);
+  \draw[hf/ask] (sup) -- (hi);
+\end{tikzpicture}
+\caption{Direct connection. Two programs hold a session with the plant. The
+browsers never reach the plant: the screen backend serves all of them.}
+\end{figure}
+
+\section{The simplest thing that works}
+
+A broker in the middle is the right answer when there are many publishers, many
+readers, or links that drop. A simulated plant running in the same cluster as
+two readers has none of those problems. Putting a broker there means running,
+monitoring and securing a piece of infrastructure to solve a problem that
+doesn't exist.
+
+\begin{history}{1998--1999 \textperiodcentered{} Extreme Programming}
+In the late 1990s, Kent Beck, Ron Jeffries and others were building Extreme
+Programming, a way of working that rejected big designs made up front. In 1998,
+Jeffries wrote a short essay called ``You're NOT gonna need it!''. Beck's
+\emph{Extreme Programming Explained}, in 1999, gave the practice its acronym:
+\textbf{YAGNI}, \emph{you aren't going to need it}.
+\end{history}
+
+\begin{concept}{YAGNI}
+Build what the problem in front of you needs, not what you predict a future
+problem will need.
+
+\textbf{What it fixes:} you stop paying, every day, for infrastructure that
+answers questions nobody is asking.
+
+\textbf{What it costs:} when the future problem does arrive, you pay to add the
+solution then. That cost stays small if the contracts between parts stay the
+same.
+\end{concept}
+
+The last part is what makes YAGNI safe here. The readers depend on the plant's
+OPC UA address space: its nodes, their names and types. If a third reader shows
+up one day, or the load of the sessions becomes measurable, a broker can be put
+in front of that same address space without changing what the readers expect.
+
+\section{What a connection is made of}
+
+An OPC UA connection isn't one thing. It's four layers, each with its own life.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[draw=black!40, line width=0.8pt, rounded corners=4pt, minimum width=124mm, minimum height=48mm, label={[hf/note, anchor=north west]north west:TCP connection}] (tcp) {};
+  \node[draw=hfSource, line width=0.8pt, rounded corners=4pt, minimum width=114mm, minimum height=38mm, label={[hf/note, anchor=north west, text=hfSource]north west:secure channel: encryption, renewed periodically}] at ([yshift=-2.5mm]tcp.center) (sc) {};
+  \node[draw=hfReader, fill=hfReader!6, line width=0.8pt, rounded corners=4pt, minimum width=104mm, minimum height=28mm, label={[hf/note, anchor=north west, text=hfReader]north west:session: who the client is, survives a lost channel}] at ([yshift=-2.5mm]sc.center) (se) {};
+  \node[draw=hfBus, fill=hfBus!8, line width=0.8pt, rounded corners=4pt, minimum width=44mm, minimum height=14mm, label={[hf/note, anchor=north west, text=hfBus]north west:subscription}] at ([xshift=-25mm, yshift=-3.5mm]se.center) (s1) {};
+  \node[draw=hfBus, fill=hfBus!8, line width=0.8pt, rounded corners=4pt, minimum width=44mm, minimum height=14mm, label={[hf/note, anchor=north west, text=hfBus]north west:subscription}] at ([xshift=25mm, yshift=-3.5mm]se.center) (s2) {};
+  \foreach \s in {s1,s2} \foreach \dx in {-12mm,0mm,12mm}
+    \node[draw=hfBus, fill=white, minimum width=9mm, minimum height=4mm, inner sep=1pt, font=\sffamily\tiny] at ([xshift=\dx, yshift=-2mm]\s.center) {item};
+\end{tikzpicture}
+\caption{The layers of an OPC UA connection. Monitored items live inside
+subscriptions, subscriptions inside a session, the session on a secure channel,
+and the channel on a TCP connection.}
+\end{figure}
+
+\begin{concept}{Session}
+A session identifies a client to the server: who it is and what it may do. It
+lives on a secure channel but doesn't die with it. If the network drops, the
+client opens a new channel and \emph{reactivates} the same session, as long as
+it does so before the session timeout. Its subscriptions are still there,
+waiting.
+
+\textbf{What it fixes:} a short network glitch doesn't throw away the client's
+state, so nothing has to be set up again.
+
+\textbf{What it costs:} the server keeps that state in memory for every client,
+for as long as the timeout allows.
+\end{concept}
+
+This is the part most clients get wrong. A client that treats every error as
+``start over'' creates a new session each time, leaves the old one hanging on
+the server until it times out, and loses whatever changed in between.
+
+\section{Subscribe, don't poll}
+
+The previous chapter showed subscriptions from the outside. Here are the knobs.
+Each monitored item has a \emph{sampling interval} (how often the server looks
+at the value), a \emph{deadband} (how much it must change to count) and a
+\emph{queue size} (how many changes to keep between two deliveries). Each
+subscription has a \emph{publishing interval} (how often the server sends what
+it has).
+
+The two readers want different things, so they set the knobs differently.
+
+\begin{itemize}
+  \item \textbf{The screen wants the present.} A queue of one is right: if a
+        value changed twice between deliveries, the screen only needs the
+        latest. The deadband can be generous, at the level a person would
+        notice.
+  \item \textbf{The historian wants everything.} Its queue must hold every
+        sample that can happen between two deliveries, or changes are thrown
+        away before they arrive. Its deadband is the exception reporting from
+        the last chapter, set close to the instrument's accuracy.
+\end{itemize}
+
+There's one more detail that matters for a screen. When a monitored item is
+created, the server always reports its current value first, whether or not it
+changes afterwards. A screen that connects while the plant is steady gets the
+whole picture immediately, including the analyzer that only updates every six
+minutes.
+
+\section{Telling a steady plant from a dead server}
+
+When nothing changes, a subscription sends nothing. That raises the same
+question every push system has to answer: is the plant steady, or is the
+server gone?
+
+\begin{concept}{Keep-alive and lifetime}
+If a subscription has had nothing to send for a number of publishing intervals
+(the \emph{max keep-alive count}), the server sends an empty message anyway, a
+\emph{keep-alive}. The client knows that, so when even the keep-alive is late,
+the server is gone.
+
+It works the other way too. If the server gets no requests from the client for
+a number of intervals (the \emph{lifetime count}), it deletes the subscription.
+The specification requires the lifetime to be at least three times the
+keep-alive, so the client always has time to notice before its subscription
+disappears.
+
+\textbf{What it fixes:} silence stops being ambiguous. Each side knows, within a
+bounded time, that the other is gone.
+
+\textbf{What it costs:} a little traffic when nothing is happening, and two
+more numbers to tune.
+\end{concept}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.95cm]
+  \draw[black!40, -{Stealth[length=2mm]}] (0,0) -- (14.6,0) node[hf/note, below left] {time};
+  \foreach \t in {1,...,14} \draw[black!40] (\t,0.08) -- (\t,-0.08);
+  \node[hf/note, anchor=north] at (1,-0.15) {publishing\\interval};
+  % data
+  \foreach \t in {1,2,4} {
+    \fill[hfBus] (\t,0.55) circle (2.4pt);
+  }
+  \node[hf/note, text=hfBus, anchor=south] at (2.5,0.8) {changes};
+  % keep-alive after 3 empty intervals
+  \draw[hfBus, fill=white, line width=0.8pt] (7,0.55) circle (2.4pt);
+  \node[hf/note, anchor=south east] at (7.2,0.8) {keep-alive};
+  \node[hf/note, anchor=north] at (6,-0.15) {3 empty};
+  % server dies
+  \draw[hf/pain] (8.25,0.3) -- (8.75,0.8) (8.25,0.8) -- (8.75,0.3);
+  \node[hf/note, text=hfAlert, anchor=south west] at (8.2,0.9) {server gone};
+  % expected keep-alive missing
+  \draw[hfAlert, densely dashed, line width=0.9pt] (10,0.55) circle (4pt);
+  \node[hf/note, text=hfAlert, anchor=north] at (10.6,-0.15) {keep-alive late:\\client marks data bad};
+\end{tikzpicture}
+\caption{Keep-alive with a count of three. After three empty intervals the
+server says ``still here''. When that message doesn't come, the client knows.}
+\end{figure}
+
+What the client does next is the important part.
+
+\begin{concept}{Data quality}
+Since OPC DA, every industrial value has traveled with a \emph{quality}: good,
+bad or uncertain. In OPC UA every value comes as a \emph{data value}: the value,
+a status code, the time it was measured at the source and the time the server
+handled it. A screen that shows a number is claiming that the plant is doing
+that \emph{now}, and when the source stops, the screen has to stop making the
+claim.
+
+\textbf{What it fixes:} the operator can tell a steady plant from a silent one.
+
+\textbf{What it costs:} every layer between the plant and the screen has to
+carry the quality along, not just the value.
+\end{concept}
+
+When the connection is lost, the screen backend marks every value as bad, and
+the screen shows ``no data''. A frozen value on an operator screen is worse than
+an empty one, because it looks exactly like a plant that is holding steady.
+
+For the historian the rule is the same, applied to history: a period without
+data is stored as a gap, marked bad. Drawing a line across it would invent
+values the plant never had.
+
+\section{When the connection drops}
+
+Giving up after a few tries is the worst policy for a program whose job is to
+watch a plant. The plant will come back, and the screen has to be there when it
+does. So the client retries for as long as it runs. The question is how fast.
+
+\begin{history}{1970--2015 \textperiodcentered{} Backing off}
+In 1970, ALOHAnet linked computers across the Hawaiian islands by radio, and
+when two stations collided, each waited a random time before sending again. In
+1976, Robert Metcalfe and David Boggs described Ethernet in \emph{Communications
+of the ACM}, and Ethernet made the waiting smarter: after each new collision, a
+station doubles the range of its random wait. That's \textbf{binary exponential
+backoff}. In 2015, Marc Brooker wrote ``Exponential Backoff and Jitter'' on the
+AWS Architecture Blog, with simulations showing that the randomness, the
+\emph{jitter}, matters as much as the doubling.
+\end{history}
+
+\begin{concept}{Exponential backoff with jitter}
+After each failed attempt, wait longer than the last time, usually twice as
+long, up to a ceiling. Then pick a random wait below that value instead of
+using it exactly.
+
+\textbf{What it fixes:} a client that's down doesn't hammer a server that's
+trying to come back, and many clients that failed together don't all retry at
+the same instant.
+
+\textbf{What it costs:} after a long outage, recovery takes up to one ceiling
+longer than it strictly had to.
+\end{concept}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.42cm, y=0.5cm]
+  \draw[black!40, -{Stealth[length=2mm]}] (0,0) -- (32,0);
+  \node[hf/note, anchor=north] at (16,-0.9) {seconds after the failure};
+  \foreach \t in {0,5,...,30} \draw[black!40] (\t,0.1) -- (\t,-0.1) node[hf/note, below] {\t};
+  % without jitter: 1,2,4,8,16 cumulative 1,3,7,15,31 -> show 1,3,7,15,(31 off)
+  \node[hf/note, anchor=east] at (-0.5,3) {no jitter};
+  \foreach \t in {1,3,7,15,30} \foreach \k in {0,1,2,3,4} \fill[hfAlert] (\t,2.4+0.3*\k) circle (2.2pt);
+  \node[hf/note, anchor=east] at (-0.5,1.1) {with jitter};
+  \foreach \t/\y in {0.4/0.6, 0.9/1.2, 0.7/1.8, 1.8/0.9, 2.6/1.5, 3.4/0.6, 4.9/1.8, 5.8/1.2, 2.1/1.8, 6.6/0.9,
+                     9.2/1.5, 11.5/0.6, 8.1/1.2, 12.9/1.8, 14.2/0.9, 17.0/1.5, 21.4/0.6, 19.6/1.2, 25.3/1.8, 27.9/0.9} {
+    \fill[hfReader] (\t,\y) circle (2.2pt);
+  }
+\end{tikzpicture}
+\caption{Five clients lose the same server. Without jitter they retry at the
+same instants, 1, 3, 7, 15 and 30 seconds, and hit the server together every
+time. With jitter the attempts spread out.}
+\end{figure}
+
+Reconnecting well means doing it in order. First, try to reactivate the session
+on a new channel. If the session is still alive, the subscriptions are too, and
+the client asks the server to \emph{republish} the notifications it missed:
+every notification carries a sequence number, so the client knows exactly which
+ones didn't arrive. Only when the session is gone does the client create a new
+one and rebuild its subscriptions. For the historian, this order is the
+difference between a complete history and one with holes in it.
+
+\section{A backend for the screen}
+
+The browsers don't talk to the plant. Between them sits a backend made for that
+one screen.
+
+\begin{history}{2013--2015 \textperiodcentered{} SoundCloud}
+SoundCloud had one general-purpose API serving its website, its iPhone app and
+its Android app. Each client needed the data in a different shape, every screen
+change waited on the API team, and the API grew into a compromise that fit
+nobody. Around 2013, the company started giving each frontend its own backend,
+owned by the team that built that frontend. Phil Calçado described the pattern
+in 2015 as the \textbf{Backend for Frontend}, or BFF, and Sam Newman's write-up
+the same year spread it.
+\end{history}
+
+\begin{concept}{Backend for Frontend (BFF)}
+A backend built for exactly one kind of client. It talks to whatever services
+exist behind it and hands that client the data in the shape the screen needs,
+over the transport the screen can use.
+
+\textbf{What it fixes:} the screen stops depending on contracts designed for
+somebody else, and internal contracts stay internal.
+
+\textbf{What it costs:} one more service to run, and the risk that logic which
+belongs to the domain leaks into it because it's the easiest place to put it.
+\end{concept}
+
+Here the BFF has one more job: it keeps the number of sessions fixed. Ten
+operators with ten browsers still mean one session against the plant, because
+the BFF holds that session and fans the data out itself. It keeps the last data
+value of every node in memory. When a browser connects, it sends that whole
+picture at once, and from then on only changes. When the connection to the
+plant is lost, it tells every browser at once.
+
+How the BFF pushes to the browser, WebSocket or Server-Sent Events, is a story
+of its own.
+
+\section{Commands}
+
+The screen also needs to act on the plant: pause it, change its speed, switch a
+disturbance on. Those commands go through the same session, but they are a
+different kind of conversation.
+
+\begin{history}{1988 \textperiodcentered{} Bertrand Meyer}
+In \emph{Object-Oriented Software Construction}, Bertrand Meyer stated the
+\textbf{command--query separation} principle: a method either changes the state
+of an object or answers a question about it, never both. Around 2010, Greg
+Young took the idea from methods up to whole systems and called it CQRS: one
+path for commands, another for queries.
+\end{history}
+
+A subscription is a query that never ends. A command is a single request that
+needs an answer: did the plant accept it? OPC UA has two ways to send one. A
+\emph{Write} sets the value of a node and returns a status code for it. A
+\emph{Call} invokes a \emph{method} on the server, with arguments and a result,
+like a function.
+
+Use a write for a value, like a setpoint or a speed. Use a method for an
+action, like ``pause'' or ``start disturbance 6''. An action written as a
+variable (``set \texttt{paused} to true'') looks simple until two clients write
+it at the same time, or until someone needs the action to refuse with a reason.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=-0.72cm]
+  \node[hf/reader, minimum width=28mm] at (0,0) {screen backend};
+  \node[hf/source, minimum width=24mm] at (7,0) {plant};
+  \draw[hf/lifeline] (0,0.7) -- (0,6.4);
+  \draw[hf/lifeline] (7,0.7) -- (7,6.4);
+  \draw[hf/push] (7,1.4) -- node[hf/note, above] {notifications} (0,1.4);
+  \draw[hf/push] (7,2.2) -- (0,2.2);
+  \draw[hf/ask] (0,3.3) -- node[hf/note, above] {Call \texttt{Pause()}} (7,3.3);
+  \draw[hf/answer] (7,4.1) -- node[hf/note, above] {status: Good} (0,4.1);
+  \draw[hf/push] (7,5.0) -- node[hf/note, above] {notification: paused} (0,5.0);
+  \draw[hf/push] (7,5.8) -- (0,5.8);
+\end{tikzpicture}
+\caption{One session, two kinds of conversation. Notifications flow without
+being asked. A command is a request that gets its own answer.}
+\end{figure}
+
+\section{What it costs}
+
+The plant holds one session per reader, and each reader has its own way of
+failing. With two readers, each doing reconnection properly, that's a cost
+worth paying for a system with fewer moving parts. A third reader means a third
+session, and at some point the count, or the load it puts on the plant, becomes
+a real problem. That's when the bus from the last chapter starts paying for
+itself.
+
+\section{Writing the choice down}
+
+Choosing this architecture over the other two is a decision someone will
+question later, and the costs above are exactly what they'll want to ``fix''.
+There's a standard way to keep the reasons around.
+
+\begin{history}{2011 \textperiodcentered{} Michael Nygard}
+In November 2011, Michael Nygard, then at Relevance, published a short blog
+post called ``Documenting Architecture Decisions''. His complaint was about what
+happens to a project after the people who designed it leave. A new developer
+finds a strange choice and has two options, both bad: accept it blindly,
+because there might be a reason, or reverse it blindly, because nobody
+remembers one. His answer was the \textbf{Architecture Decision Record}.
+\end{history}
+
+\begin{concept}{Architecture Decision Record (ADR)}
+A short, numbered text file kept in the repository, one per decision, with a
+fixed shape: the \emph{context} (what forced the decision), the
+\emph{decision}, its \emph{status} (proposed, accepted, superseded) and its
+\emph{consequences}, good and bad. An ADR is never edited to change its mind. A
+new ADR supersedes it.
+
+\textbf{What it fixes:} the reason behind a choice survives the people who made
+it.
+
+\textbf{What it costs:} you have to write while deciding, when you'd rather be
+coding.
+\end{concept}
+
+The most useful part is the bad consequences. Writing them down shows that a
+cost was accepted on purpose, so whoever comes later knows it isn't a bug.
+
+Reversals belong in the record too. When a team adopts a broker and then
+decides it doesn't need one, the first ADR stays, marked superseded, and the
+second one says why. Whoever proposes the broker again will find both, along
+with the reason it was dropped.
+
+\section*{Further reading}
+
+\begin{itemize}
+  \item OPC Foundation, \emph{OPC UA Part 4: Services}, sections on sessions,
+        subscriptions and monitored items,
+        \url{https://reference.opcfoundation.org/Core/Part4/}.
+  \item K.\ Beck, \emph{Extreme Programming Explained}, Addison-Wesley, 1999.
+  \item R.~M.\ Metcalfe and D.~R.\ Boggs, ``Ethernet: Distributed Packet
+        Switching for Local Computer Networks'', \emph{Communications of the
+        ACM} 19(7), 1976.
+  \item M.\ Brooker, ``Exponential Backoff and Jitter'', AWS Architecture Blog,
+        2015,
+        \url{https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/}.
+  \item P.\ Calçado, ``The Back-end for Front-end Pattern (BFF)'', 2015,
+        \url{https://philcalcado.com/2015/09/18/the_back_end_for_front_end_pattern_bff.html}.
+  \item B.\ Meyer, \emph{Object-Oriented Software Construction}, Prentice Hall,
+        1988.
+  \item M.\ Nygard, ``Documenting Architecture Decisions'', 2011,
+        \url{https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions}.
+\end{itemize}
