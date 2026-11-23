@@ -2,36 +2,98 @@
 \addcontentsline{toc}{chapter}{How to Read This Book}
 \markboth{HOW TO READ THIS BOOK}{HOW TO READ THIS BOOK}
 
-Each chapter starts from a real situation, the kind you find on a whiteboard
-when a system is about to grow, and asks why the technologies we reach for are
-shaped the way they are.
+\begin{flushright}
+\itshape Lasciate ogne fretta, voi ch'intrate.\\[2pt]
+\upshape\small not quite Dante, \emph{Inferno}, canto III
+\end{flushright}
 
-The answer is always historical. No idea in computing showed up because it was
-elegant. Each one was forced by a pain somebody had, at a certain time and
-place. It fixed something its predecessor got wrong, and it brought new costs of
-its own. If you know that lineage, you know when to use the idea and when to run
-from it. If you only know the rule, you'll apply it where the pain doesn't exist.
+Over the gate of Hell, Dante wrote: abandon all hope, ye who enter here. This
+book asks for less: abandon all haste.
 
-\section*{Two kinds of boxes}
+This is a dense book. It is packed with names, dates, versions and code, and
+almost every page leans on something said before it. It assumes you will stop,
+go back a few pages, check a date, and come back. It was written for curious
+people: the ones who want to know why a thing is the way it is, who would rather
+spend an evening on one page than skim twenty, and who are not satisfied until
+the idea and the history behind it both make sense.
 
-Stories and concepts are kept apart, so you always know which one you're
-reading.
+One project runs through the whole book: a screen for the operators of a
+chemical plant. The plant is the Tennessee Eastman process, which J.\,J.~Downs
+and E.\,F.~Vogel, of the Eastman Chemical Company, published in 1993 as a
+challenge problem for process control. Here it runs as a simulation, and around
+it the project builds what a real plant has: a program that keeps the plant's
+history, a server that reads the plant over OPC UA and pushes what it reads,
+and a page in the browser that draws the plant and its alarms.
+
+Each chapter starts from a decision in that project, the kind you find on a
+whiteboard when a system is about to grow, and asks why the technologies we
+reach for are shaped the way they are. The book has no parts. The chapters come
+in the order the project reaches each subject, from who is allowed to talk to
+the plant, to the server, to the browser. None of them replaces the
+documentation of the tools it discusses. Each one goes as far as the project
+needs and stops there.
+
+\section*{Every idea has a parent}
+
+No technology in this book showed up because it was elegant. General Motors
+asked for the programmable logic controller in 1968 because it was tired of
+rewiring relay cabinets every time a production line changed. Automation
+vendors and Microsoft wrote OPC in 1996 because every screen maker was writing
+its own driver for every device. Dan Kegel described the C10K problem in 1999
+because a server that gave each connection its own thread couldn't hold ten
+thousand of them, and the event loop that Node is built on was the answer.
+Netscape created the same-origin policy because, once a browser had both
+cookies and JavaScript, any page you visited could have read your mail.
+Stephen C.\ Johnson wrote lint in 1978 because the C compiler accepted code that
+was almost certainly wrong. Each idea fixed something its predecessor got wrong
+and brought costs of its own. If you know the lineage, you know when the idea
+applies. If you only know the rule, you will apply it where it does not belong.
+
+\section*{Five kinds of boxes}
+
+Stories, concepts, questions, reflections and words are kept apart, so you
+always know which one you are reading.
 
 \begin{history}{year \textperiodcentered{} place}
 An amber box tells a story: who did it, when, and what forced the idea into
-existence. Everything in it is real: the people, the dates and the problems.
-No invented incidents.
+existence. The people, the dates and the problems in it are real. No invented
+incidents.
 \end{history}
 
 \begin{concept}{name}
-A blue box defines an idea you'll need again. It always ends the same way:
+A blue box defines an idea you will need again. It always ends the same way:
 
-\textbf{What it fixes:} the pain that made the idea worth having.
+\textbf{What it fixes:} the problem that made the idea worth having.
 
 \textbf{What it costs:} what you give up by using it.
 \end{concept}
 
+\begin{question}{the question you were embarrassed to ask}
+A teal box asks the question that occurs to anyone reading the paragraph above
+it and that nobody asks out loud, and then answers it.
+\end{question}
+
+\begin{reflection}{the thing that should bother you}
+A purple box stops on a statement that sounds absurd, or that the text just said
+in passing as if it were obvious, and works out what it means and why it is
+true.
+\end{reflection}
+
+\begin{etymology}
+A gray box says where a word comes from. The origin of a word is not its
+definition, but it often shows what the people who coined it were looking at.
+\end{etymology}
+
 The text between the boxes is the argument that connects them.
+
+\section*{Code}
+
+The examples are in JavaScript and TypeScript, the languages of the server and
+the browser in this project. Source code sits on a light gray background and
+what a command printed sits on a dark one. Every example was run before it went
+into the book, and the output shown is the output it gave. There is as little
+code as possible: a block appears only when it shows something a sentence
+can't.
 
 \section*{Diagrams}
 
@@ -65,16 +127,18 @@ every figure of the book.
 
 \section*{Exact facts, firm opinions}
 
-This isn't a scientific book, and it doesn't pretend to be one.
+This is not a scientific book, and it does not pretend to be one.
 
-The history is checked. When the book says who did something and when, that's
+The history is checked. When the book says who did something and when, that is
 what happened.
 
-The opinions are another matter. When something is a mistake, the book says
-it's a mistake. When something is useless, it says \emph{useless}, not ``of
-limited value in some contexts''. Sometimes that will be unfair or imprecise, and
-we accept that.
+The opinions are another matter. When a framework survives only because the
+tutorials keep teaching it, the book says so. When a message broker adds nothing
+to a system with one reader, the book says it adds nothing, not that it is ``of
+limited value in some contexts''. Sometimes that will be unfair or imprecise,
+and we accept that.
 
 A reader who leaves with a position can argue with it, refine it, or throw it
 away. A reader who leaves with ``it depends'' has nothing to hold. Between being
-precise and leaving you with a position, this book prefers to give you a position.
+precise and leaving you with a position, this book prefers to give you a
+position.

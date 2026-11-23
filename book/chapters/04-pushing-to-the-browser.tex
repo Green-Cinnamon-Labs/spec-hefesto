@@ -1,0 +1,1061 @@
+\chapter{Pushing to the Browser}
+
+The screen backend now exists and holds a session with the plant. The other half
+of its job is the browser. An operator screen needs a fresh picture of the plant
+about twice a second: 41 measurements, 12 valve positions and whether the plant
+has shut down. The browser has to receive that picture without asking for it,
+keep receiving it when the network is slow, and know when the plant behind it is
+gone.
+
+Chapter~2 left one question open: how a backend pushes to a browser. The answer
+took the web fifteen years.
+
+\section{Asking again}
+
+The web was built on one exchange: the browser asks, the server answers, and
+the conversation is over. The server has no way to speak first. So the simplest
+live screen is the one from Chapter~1, moved to the browser: ask every half
+second.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=-0.62cm]
+  \node[hf/note, font=\sffamily\footnotesize\bfseries] at (2.5,-1.3) {polling};
+  \node[hf/reader, minimum width=18mm] at (0,0) {browser};
+  \node[hf/reader, minimum width=18mm] at (5,0) {server};
+  \draw[hf/lifeline] (0,0.7) -- (0,7.4);
+  \draw[hf/lifeline] (5,0.7) -- (5,7.4);
+  \foreach \y in {1.4,3.4,5.4} {
+    \draw[hf/ask] (0,\y) -- node[hf/note, above] {GET} (5,\y);
+    \draw[hf/answer] (5,\y+0.9) -- node[hf/note, above] {headers + 53 numbers} (0,\y+0.9);
+  }
+  \begin{scope}[xshift=7.5cm]
+    \node[hf/note, font=\sffamily\footnotesize\bfseries] at (2.5,-1.3) {push};
+    \node[hf/reader, minimum width=18mm] at (0,0) {browser};
+    \node[hf/reader, minimum width=18mm] at (5,0) {server};
+    \draw[hf/lifeline] (0,0.7) -- (0,7.4);
+    \draw[hf/lifeline] (5,0.7) -- (5,7.4);
+    \draw[hf/ask] (0,1.4) -- node[hf/note, above] {open} (5,1.4);
+    \foreach \y in {2.9,4.4,5.9} \draw[hf/push] (5,\y) -- node[hf/note, above] {53 numbers} (0,\y);
+  \end{scope}
+\end{tikzpicture}
+\caption{The same three updates. Polling pays a full request and response for
+each one, per browser. Push pays for one connection and then sends only the
+data.}
+\end{figure}
+
+Polling works, and its cost is easy to state. Each open tab makes two requests
+a second. Ten tabs make twenty. Every answer carries a full set of HTTP headers,
+often larger than the 53 numbers inside it, and many of those answers say
+nothing new. The server does work in proportion to the number of tabs, not to
+the number of changes in the plant.
+
+\begin{history}{1999--2006 \textperiodcentered{} Ajax and Comet}
+In 1999, the team building Outlook Web Access at Microsoft needed a mail page
+that could fetch new messages without reloading. They added an object to
+Internet Explorer 5 that let a script make an HTTP request in the background.
+Other browsers copied it as \texttt{XMLHttpRequest}. In February 2005, Jesse
+James Garrett gave the style of application built on it a name, \textbf{Ajax},
+and Google Maps and Gmail made it famous.
+
+Ajax still asked first. In March 2006, Alex Russell named the set of tricks
+people used to make the server speak first \textbf{Comet}. The most common one
+was the \emph{long poll}: the browser asks, the server holds the request open
+until it has something to say, answers, and the browser immediately asks again.
+It worked everywhere and it was a hack: one request per message, and a server
+holding thousands of requests that were really waiting connections.
+\end{history}
+
+\section{A connection that stays open}
+
+\begin{history}{2004--2011 \textperiodcentered{} Server-Sent Events and WebSocket}
+Ian Hickson was the editor of the document that describes how browsers must
+behave, the one that later got the name HTML5. He worked on the problem from
+two sides. The first answer, sketched in 2004 and shipped by the Opera browser
+in 2006, was \textbf{Server-Sent Events}: the browser makes one ordinary HTTP
+request, and the server never finishes the response, writing one event after
+another into it as plain text. It only goes one way, server to browser.
+
+The second was a real two-way connection, where either side can send at any
+moment. The draft had a slot reserved for it under a provisional name,
+\texttt{TCPConnection}, because the idea was to give a page something close to
+a raw network connection, and TCP is the protocol that carries almost every
+connection on the internet. In June 2008, a developer named Michael Carter
+pushed the discussion forward on the group's mailing list and chat channel. The
+design took shape in a few weeks, and he and Hickson named it
+\textbf{WebSocket}. Chrome shipped it at the end of 2009. Because it was a
+network protocol and not just a browser feature, it then went to the body that
+standardizes internet protocols, where it was rewritten to close security
+holes, and was published as RFC~6455 in December 2011.
+\end{history}
+
+\begin{question}{Who decides how the web works?}
+Three groups, and the history above passes through all of them.
+
+The \textbf{W3C}, the World Wide Web Consortium, was founded by Tim
+Berners-Lee in 1994 to standardize the web he had invented. By the early 2000s
+it was betting on a stricter successor to HTML that browsers weren't
+interested in. In June 2004, people from Apple, Mozilla and Opera left to
+write the next HTML themselves, as the \textbf{WHATWG} (Web Hypertext
+Application Technology Working Group). Hickson was its editor, and its document
+became HTML5. In 2019 the W3C agreed that the WHATWG's version is the official
+one. HTML and the rules for what a browser does are theirs.
+
+The \textbf{IETF}, the Internet Engineering Task Force, has met since 1986 and
+standardizes the protocols underneath: TCP, HTTP, and anything else that two
+programs say to each other over the network. It decides by ``rough consensus
+and running code'', in David Clark's 1992 phrase. A finished IETF standard is
+published as an \textbf{RFC}, a numbered document that never changes; a
+correction gets a new number. The name means \emph{Request for Comments}, and
+it's a leftover from April 1969, when Steve Crocker, a graduate student, wrote
+RFC~1 about the ARPANET and chose a title humble enough not to offend anyone
+senior. The name stuck to documents that became the law of the internet.
+
+So WebSocket has two halves: the browser's side, in the WHATWG's HTML, and the
+protocol on the wire, in an IETF RFC.
+\end{question}
+
+A WebSocket starts life as an HTTP request, so it passes through the same ports,
+proxies and load balancers as everything else on the web. The request asks the
+server to stop speaking HTTP on this connection:
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=-0.7cm]
+  \node[hf/reader, minimum width=20mm] at (0,0) {browser};
+  \node[hf/reader, minimum width=20mm] at (9,0) {server};
+  \draw[hf/lifeline] (0,0.7) -- (0,7.8);
+  \draw[hf/lifeline] (9,0.7) -- (9,7.8);
+  \draw[hf/ask] (0,1.6) -- node[hf/note, above, align=center]
+    {\texttt{GET /stream}\enspace\texttt{Upgrade: websocket}\\\texttt{Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==}} (9,1.6);
+  \draw[hf/answer] (9,3.4) -- node[hf/note, above, align=center]
+    {\texttt{101 Switching Protocols}\\\texttt{Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=}} (0,3.4);
+  \node[hf/note, anchor=west] at (9.2,4.4) {no more HTTP};
+  \draw[black!25, dashed] (-0.5,4.4) -- (9,4.4);
+  \foreach \y in {5.2,6.0,6.8} \draw[hf/push] (9,\y) -- (0,\y);
+  \node[hf/note, anchor=east] at (-0.2,6.0) {frames};
+  \draw[hf/ask] (0,7.4) -- node[hf/note, above] {a frame the other way, any time} (9,7.4);
+\end{tikzpicture}
+\caption{The WebSocket handshake. One HTTP exchange, and then the same TCP
+connection carries frames in both directions.}
+\end{figure}
+
+Look at the two odd lines in the figure, the \texttt{Key} going out and the
+\texttt{Accept} coming back. They are a challenge and its answer. Before the
+browser stops speaking HTTP, it wants proof that the other side read this
+request and really speaks WebSocket. An ordinary web server that has never
+heard of WebSocket shouldn't be able to say yes by accident.
+
+So the browser sends a challenge: a random value, new for every connection.
+The server has to transform it with a rule that every WebSocket server knows:
+glue a fixed string, written once into RFC~6455, to the end of the challenge,
+hash the result, and send it back. The browser does the same computation on its
+side. If the two results match, the connection goes on. If they don't, the
+browser closes it. A server that doesn't know the rule can't produce the right
+answer, and an answer saved from an earlier connection is useless, because the
+challenge is different every time.
+
+The whole rule is one line of code. Here it is, run on the sample challenge
+printed in the RFC, the same one in the figure:
+
+\begin{code}
+import { createHash } from 'node:crypto';
+
+const key = 'dGhlIHNhbXBsZSBub25jZQ==';            // the challenge (RFC sample)
+const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'; // the fixed string
+console.log(createHash('sha1').update(key + GUID).digest('base64'));
+\end{code}
+
+\begin{terminal}
+$ node accept.js
+s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+\end{terminal}
+
+The output is the \texttt{Accept} in the figure. That is all the code shows:
+the answer is not magic, anyone who knows the fixed string can compute it.
+
+The RFC has a second protection, and this one came from an attack. In 2010,
+Lin-Shung Huang, Eric Chen, Adam Barth, Eric Rescorla and Collin Jackson showed
+that, with the early drafts of the protocol, a malicious page could write
+WebSocket messages whose bytes looked exactly like an ordinary HTTP request.
+Some old proxies sitting between users and the internet didn't understand
+WebSocket, read those bytes as a real request, and stored the attacker's content
+in their cache under the address of a real site. Every other user behind that
+proxy would then get the attacker's content when they visited that site. The
+fix is called \emph{masking}: the browser scrambles every message it sends with
+four random bytes, and sends the four bytes along so the server can unscramble
+it. The page never sees those bytes, so it can no longer choose what goes
+on the wire.
+
+\begin{concept}{WebSocket}
+A connection between a browser and a server that starts as an HTTP request and
+then carries messages in both directions, each side sending whenever it wants,
+until one side closes it.
+
+\textbf{What it fixes:} the server can speak first, and each message costs a
+few bytes of framing instead of a full request.
+
+\textbf{What it costs:} the connection is state. The server has to keep it,
+notice when it dies, and decide what to do when the other end reads slower
+than it writes. HTTP gave you all of that for free by forgetting the client
+after each answer.
+\end{concept}
+
+\section{The other way: Server-Sent Events}
+
+Server-Sent Events would also carry this stream, and with less machinery. There
+is no handshake and no change of protocol. The browser makes an ordinary HTTP
+request, and the server answers with an ordinary HTTP response that never ends.
+Each event is a few lines of text followed by a blank line. Here is a server
+that sends two events, as \texttt{curl} sees it:
+
+\begin{terminal}
+$ curl -i http://localhost:8092/
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Date: Wed, 18 Nov 2026 16:38:10 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+Transfer-Encoding: chunked
+
+id: 1
+data: tick 1
+
+id: 2
+data: tick 2
+\end{terminal}
+
+The \texttt{data} line is the message. The \texttt{id} line is what makes the
+format worth knowing. When the connection drops, the browser opens it again by
+itself, without a line of code on the page, and the new request carries a
+header, \texttt{Last-Event-ID}, with the last ID it received. The server reads
+it and continues from there. In a test where the server dropped the connection
+after every two events, the browser came back half a second later with
+\texttt{Last-Event-ID: 2}, and the server went on from \texttt{tick 3}. The
+half second was the server's choice: a \texttt{retry} line in the stream tells
+the browser how long to wait. With a WebSocket, all of that (noticing the drop,
+waiting, reconnecting, saying where you stopped) is code you write.
+
+For data that only flows from the server to the browser, Server-Sent Events are
+the simpler tool, and they are underused. The reason is history, not merit.
+Internet Explorer never implemented them, and neither did the first version of
+Edge. Microsoft's browser only got them in January 2020, when Edge was rebuilt
+on Chromium. For ten years, any site that had to work in Internet Explorer used
+a WebSocket library instead, and WebSocket became the default answer to ``how do
+I push to the browser''.
+
+The other weakness was a number: six connections. To see where it came from,
+you have to know what changed between the versions of HTTP.
+
+\begin{history}{1991--2022 \textperiodcentered{} HTTP, version by version}
+The first HTTP, which Tim Berners-Lee wrote down in 1991 and which was later
+called HTTP/0.9, had one command. The browser opened a connection, sent
+\texttt{GET} and a path, received the page, and the server closed the
+connection.
+
+HTTP/1.0 (RFC~1945, May 1996) added headers, status codes and content types,
+everything that lets an answer say what it is. It still used one connection per
+request, and opening a TCP connection costs a round trip before the first byte
+of the request goes out.
+
+HTTP/1.1 (RFC~2068 in January 1997, revised as RFC~2616 in June 1999) kept the
+connection open after the answer so the next request could reuse it. But on one
+connection, requests still waited in line: the second answer could only start
+after the first had finished. The standard allowed sending several requests
+without waiting (\emph{pipelining}), but enough proxies and servers got it
+wrong that browsers left it switched off. So browsers opened several connections
+to the same site in parallel. RFC~2616 asked for no more than two. In 2008,
+Internet Explorer~8 and Firefox~3 went to six, and the other browsers followed.
+For a decade, web developers fought that number: they glued icons into one image
+(\emph{sprites}), concatenated scripts into one file, and spread files over
+several hostnames to get six more connections from each.
+
+In November 2009, Mike Belshe and Roberto Peon, at Google, announced SPDY: many
+requests on one connection at the same time, each cut into small frames
+labeled with the request they belong to, so a slow answer no longer blocks the
+others. Chrome shipped it in 2010. The IETF took SPDY as the starting point for
+the next version, published as HTTP/2, RFC~7540, in May 2015. There was never
+an HTTP/1.2.
+
+HTTP/2 still runs on TCP, which delivers bytes strictly in order, so one lost
+packet holds up every request on the connection until it is sent again.
+HTTP/3 (RFC~9114, June 2022) keeps the same idea on top of QUIC, a transport
+that Google also started, where a lost packet only holds up its own request.
+\end{history}
+
+\begin{concept}{Multiplexing}
+Many conversations on one connection at the same time. Each one is cut into
+small pieces, every piece is labeled with the conversation it belongs to, and
+the other end puts each conversation back together.
+
+\textbf{What it fixes:} the wait in line. A slow answer no longer blocks the
+ones behind it, and there's no reason to open several connections to the same
+place.
+
+\textbf{What it costs:} everything rides on one connection. On TCP, a lost
+packet stops all the conversations at once, which is what HTTP/3 fixed.
+\end{concept}
+
+\begin{etymology}
+\emph{Multiplex} is Latin for ``many-fold''. Telegraph engineers used it in the
+1870s for sending several messages over one wire at once; Thomas Edison's
+\emph{quadruplex} of 1874 sent four. The problem was the same as HTTP's: wire
+was expensive, so you made each one carry more.
+\end{etymology}
+
+Now the six connections make sense, and so does the trouble they gave
+Server-Sent Events. In HTTP/1.1, an event stream is a response that never ends,
+so it holds one of the six connections forever. The limit is per browser and per
+site, shared by every tab. Open the operator screen in six tabs and all six
+connections are taken. The seventh tab can't load anything from that server,
+not even its own page, and it sits there loading until another tab closes.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \node[hf/note, font=\sffamily\footnotesize\bfseries] at (2.5,4.2) {HTTP/1.1};
+  \node[hf/reader, minimum width=14mm, minimum height=38mm] at (0,1.8) {browser};
+  \node[hf/reader, minimum width=14mm, minimum height=38mm] at (5,1.8) {server};
+  \foreach \y in {3.3,2.85,2.4,1.95,1.5,1.05} \draw[hf/push] (4.3,\y) -- (0.7,\y);
+  \draw[hf/pain, dashed] (0.7,0.35) -- (2.2,0.35);
+  \node[hf/note, anchor=west, text=hfAlert] at (2.25,0.35) {tab 7 waits};
+  \node[hf/note, text width=50mm] at (2.5,-0.75) {six connections, each one held by a stream that never ends};
+  \begin{scope}[xshift=7.5cm]
+    \node[hf/note, font=\sffamily\footnotesize\bfseries] at (2.5,4.2) {HTTP/2};
+    \node[hf/reader, minimum width=14mm, minimum height=38mm] at (0,1.8) {browser};
+    \node[hf/reader, minimum width=14mm, minimum height=38mm] at (5,1.8) {server};
+    \draw[black!40, line width=0.8pt, rounded corners=8pt] (0.7,0.55) rectangle (4.3,3.6);
+    \foreach \y in {3.25,2.85,2.45,2.05,1.65,1.25,0.85} \draw[hf/push] (4.3,\y) -- (0.7,\y);
+    \node[hf/note, text width=50mm] at (2.5,-0.75) {one connection, seven streams inside it};
+  \end{scope}
+\end{tikzpicture}
+\caption{Seven tabs of the same screen, each with an event stream. In HTTP/1.1
+every stream takes a whole connection, and the browser allows six per site. In
+HTTP/2 the streams share one connection.}
+\end{figure}
+
+HTTP/2 removes the problem. Each event stream becomes one stream among many
+inside a single connection, and the browser and the server agree on how many
+can be open at once, usually a hundred. One catch survives: browsers speak
+HTTP/2 only over HTTPS. On a plain \texttt{http://localhost}, which is where a
+developer spends the day, it's HTTP/1.1 and the limit of six is back.
+
+So the choice is simpler than its reputation. For a stream that only goes from
+the server to the browser, use Server-Sent Events, served over HTTP/2. WebSocket
+is the choice when the browser will also talk on the same connection, or when
+the framework you use has better support for it.
+
+Back to the screen. The chapter started with one question: how does the
+backend get the picture of the plant to the browser without the browser asking
+for it? Now there is an answer. The browser opens a connection once and keeps it
+open, as a WebSocket or as an event stream, and the backend writes into it
+whenever it has something new. The rest of this chapter uses WebSocket, but
+almost everything in it holds for Server-Sent Events too.
+
+An open connection isn't free, though. With plain HTTP, the server answered and
+forgot the client. Now it has a list of connections it has to look after, and
+the rest of the chapter is about what that asks of it: sending to many browsers
+at once, a browser that stops reading, a browser that disappears without a word,
+telling the screen that the plant has failed, agreeing on what a message looks
+like, and testing all of it without a plant.
+
+\section{One timer, many clients}
+
+Start with the sending. With polling, every request from every tab made the
+server read the plant and build an answer, so ten tabs meant ten times the work.
+With open connections, the server has one timer instead. Every half second it
+builds the picture once, turns it into text once, and writes that same text
+into every open connection. Two tabs show the same moment of the plant, and the
+work no longer depends on how many people are looking.
+
+That loop has one weak point, and it is the subject of the rest of this section.
+The server writes into each connection and moves on. It never checks whether the
+browser on the other end is taking the messages out. Usually it is. But in a
+control room some browser eventually isn't: a laptop on bad Wi-Fi, a browser
+frozen by some other tab, a tablet left asleep on a desk. The connection is
+still open, nobody closed it, and the server keeps writing into it twice a
+second.
+
+Those messages don't vanish. They wait, in the server's memory, and nothing
+ever throws them away. One frozen tablet is enough to make the server's memory
+grow, slowly, until somebody restarts it. The fix is a few lines: before
+writing to a connection, look at how much is still waiting there, and if it's
+too much, skip this picture for that browser. What follows shows why the
+messages pile up, measures it, and explains why skipping is the right fix for a
+screen.
+
+\begin{question}{Doesn't the server just send and forget?}
+That's how radio works: the station broadcasts, and whoever had the set on
+heard it. A WebSocket doesn't work like that, because underneath it is a TCP
+connection, and TCP makes one promise: every byte written arrives, complete and
+in order, or the connection breaks. It never drops a byte quietly. To keep
+that promise, the sending side has to hold on to every byte until the other
+side confirms it has it. A browser that isn't reading confirms nothing, so the
+bytes stay.
+
+It isn't one broadcast, either. Each browser has its own connection, and the
+loop that ``sends to everyone'' is a \texttt{for} that writes a copy into each
+connection, one at a time.
+
+Send-and-forget does exist on the internet. In 1978, TCP was split in two: IP
+to carry packets, and TCP on top of it for the promise. Danny Cohen, who was
+sending voice over the network, had argued for the split, because in a
+conversation a word that arrives late is worse than a word that's lost. David
+P.~Reed designed UDP for programs like his, packets with no promise, and it
+was published as RFC~768 in August 1980. Video calls and games still run on it.
+A page that pushes data to a screen, like this one, runs on TCP.
+\end{question}
+
+When the server calls \texttt{send()}, the call returns at once, but the
+message hasn't arrived anywhere. To see where it is, you need the pieces a
+message passes through on its way from the backend to the screen, and who
+writes each one. Figure~\ref{fig:buffers} shows them.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{col/.style={minimum width=44mm, minimum height=10mm}}
+  % server machine
+  \node[hf/note, font=\sffamily\footnotesize\bfseries] at (0,1.75) {server machine};
+  \node[hf/reader, col] (code) at (0,0) {your code\\{\footnotesize the timer loop: build, check, \texttt{send()}}};
+  \node[hf/bus, col] (lib) at (0,-1.6) {WebSocket library (\texttt{ws})\\{\footnotesize makes frames, reports \texttt{bufferedAmount}}};
+  \node[hf/bus, col, draw=hfAlert, line width=1.4pt] (sock) at (0,-3.2) {Node's socket\\{\footnotesize a queue with no limit}};
+  \node[hf/source, col] (kout) at (0,-5.4) {operating system: TCP\\{\footnotesize send buffer, fixed size}};
+  \begin{scope}[on background layer]
+    \node[draw=black!35, dashed, rounded corners=3pt, inner sep=3mm,
+      fit=(code)(lib)(sock), label={[hf/note, anchor=south]north:Node process, server memory}] {};
+  \end{scope}
+  \draw[hf/push] (code) -- (lib);
+  \draw[hf/push] (lib) -- (sock);
+  \draw[hf/push] (sock) -- (kout);
+  \draw[hf/ask, dashed] (sock.west) to[bend left=50]
+    node[hf/note, left, text=hfReader, align=right] {reads\\\texttt{bufferedAmount},\\skips if too big} (code.west);
+  \node[hf/note, text=hfAlert, anchor=west, align=left] at ([xshift=4mm]sock.east) {grows with\\every tick};
+  % client machine
+  \node[hf/note, font=\sffamily\footnotesize\bfseries] at (6.9,1.75) {client machine};
+  \node[hf/reader, col] (page) at (6.9,0) {the page\\{\footnotesize draws the screen}};
+  \node[hf/reader, col] (br) at (6.9,-1.6) {browser\\{\footnotesize WebSocket, \texttt{onmessage}}};
+  \node[hf/source, col] (kin) at (6.9,-5.4) {operating system: TCP\\{\footnotesize receive buffer, fixed size}};
+  \draw[hf/push] (br) -- (page);
+  \draw[hf/push] (kin) -- (br);
+  \draw[hf/pain] (6.65,-3.75) -- (7.15,-3.25) (6.65,-3.25) -- (7.15,-3.75);
+  \node[hf/note, text=hfAlert, anchor=west] at (7.3,-3.5) {stops reading};
+  % the wire
+  \draw[hf/push] ([yshift=2mm]kout.east) -- node[hf/note, above] {network} ([yshift=2mm]kin.west);
+  \draw[hf/pain, dashed, -{Stealth[length=2.2mm]}] ([yshift=-2mm]kin.west) --
+    node[hf/note, below, text=hfAlert, align=center] {full: stop sending\\(the TCP window)} ([yshift=-2mm]kout.east);
+\end{tikzpicture}
+\caption{From the backend to the screen. Three pieces live inside the Node
+process; TCP and its two buffers belong to the operating system on each
+machine. When the browser stops reading, the two TCP buffers fill and stop, and
+the messages pile up in Node's socket, in red. The check that skips a picture
+is in your code, before \texttt{send()}.}
+\label{fig:buffers}
+\end{figure}
+
+On the server, three pieces live inside the Node process, in its memory:
+
+\begin{itemize}
+\item \textbf{Your code}, the timer loop. It builds the picture and calls
+  \texttt{send()} once for each connection. The web framework, Express or
+  Fastify, isn't in this path at all: it answered the HTTP request that opened
+  the connection and handed the connection over.
+\item \textbf{The WebSocket library}, usually \texttt{ws}. It wraps the
+  message in a WebSocket frame and passes it down. It also tells you how big
+  the queue below it is, as \texttt{bufferedAmount}.
+\item \textbf{Node's socket}, one per connection. This is where bytes wait
+  until the operating system accepts them, and this queue has no maximum.
+\end{itemize}
+
+Below Node is the operating system. TCP isn't written in Node, or in the
+library: it's part of the operating system, on both machines, and Node only
+asks it to send some bytes. The operating system keeps a \emph{send buffer} of
+fixed size for each connection, sends from it, and only deletes a byte once the
+other side confirms it arrived. On the client, its operating system keeps a
+\emph{receive buffer}, also fixed, where bytes wait until the browser reads
+them. The browser then unwraps the frame and calls the page's
+\texttt{onmessage}, and the page draws.
+
+Now the browser stops reading. The chain fills from the end. The receive
+buffer on the client fills, and the client's operating system tells the
+server's: no room, stop sending. The server's send buffer fills next, because
+nothing leaves it. From then on the operating system accepts nothing more from
+Node, and every new message stays in Node's socket. The two TCP buffers have a
+fixed size and stop growing there. Node's socket doesn't. It's the red box in
+the figure, and it grows with every tick, in the server's memory, for as long as
+that browser stays connected.
+
+The skip goes in your code, the only piece in the figure you write. Before
+calling \texttt{send()} for a connection, the loop looks at
+\texttt{bufferedAmount}. If it's above a limit, the loop doesn't call
+\texttt{send()} for that connection on this tick. Nothing new enters the red
+box, and the browser simply gets the latest picture once it starts reading
+again.
+
+The ``no room, stop sending'' between the two machines isn't something Node
+does. It's built into TCP, and it's fifty years old.
+
+\begin{history}{1974--2015 \textperiodcentered{} Flow control}
+In 1974, Vint Cerf and Bob Kahn described TCP with a \emph{window}: the receiver
+tells the sender how many bytes it still has room for, and the sender never
+sends more. A slow reader slows the writer down, all the way back through the
+network. In software the same idea came back under the name
+\textbf{backpressure}. Node's streams had it from the start: \texttt{write()}
+returns \texttt{false} when the stream's buffer is full, and a \texttt{drain}
+event says when to continue. From 2013 to 2015, engineers from Netflix,
+Typesafe (now Lightbend), Pivotal and others wrote the Reactive Streams specification so that
+asynchronous libraries on the JVM could pass the signal to one another, and
+Java~9 adopted it in 2017.
+\end{history}
+
+TCP's ``stop'' reaches the server, but the WebSocket's \texttt{send()} in Node
+doesn't pass it on to your code. It never refuses a message and never says
+``wait''. It queues and returns. The
+only trace of a reader that has stopped is a number on the connection,
+\texttt{bufferedAmount}: how many bytes are sitting in Node's socket, the red
+box in Figure~\ref{fig:buffers}. A server that never looks at it will keep
+everything it ever tried to send to a stalled client.
+
+To see it happen, here is a server that sends 16~KB every millisecond to every
+client and prints the size of each queue once a second. It also takes an
+optional limit: a client whose queue is already longer than that is skipped on
+this tick.
+
+\begin{code}
+import { WebSocketServer } from 'ws';
+
+const LIMIT = Number(process.env.LIMIT ?? Infinity); // bytes
+const wss = new WebSocketServer({ port: 8090 });
+const message = 'x'.repeat(16 * 1024);
+
+setInterval(() => {
+  for (const client of wss.clients) {
+    if (client.bufferedAmount > LIMIT) continue; // skip this tick
+    client.send(message);
+  }
+}, 1);
+
+setInterval(() => {
+  for (const client of wss.clients) console.log('buffered:', client.bufferedAmount);
+}, 1000);
+\end{code}
+
+On the other end is the stalled client: a small program that opens a
+connection, sends the WebSocket handshake shown earlier, and then never
+reads a single byte. The server ran twice, on the left without a limit and on
+the right with a limit of 64~KiB. Each line is one second, and the number is
+the size of that client's queue in bytes:
+
+\begin{terminal}
+$ node flood.js                    $ LIMIT=65536 node flood.js
+buffered: 0                        buffered: 0
+buffered: 0                        buffered: 0
+buffered: 491640                   buffered: 65552
+buffered: 1622412                  buffered: 65552
+buffered: 2769572                  buffered: 65552
+buffered: 4211716                  buffered: 65552
+buffered: 5948844                  buffered: 65552
+buffered: 7096004                  buffered: 65552
+\end{terminal}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.2cm, y=0.6cm]
+  \draw[black!40, -{Stealth[length=2mm]}] (0,0) -- (8.6,0) node[hf/note, right] {seconds};
+  \draw[black!40, -{Stealth[length=2mm]}] (0,0) -- (0,7.8) node[hf/note, above] {MB queued};
+  \foreach \t in {1,...,8} \draw[black!40] (\t,0.08) -- (\t,-0.08) node[hf/note, below] {\t};
+  \foreach \m in {2,4,6} \draw[black!40] (0.08,\m) -- (-0.08,\m) node[hf/note, left] {\m};
+  \draw[hfAlert, line width=1pt] plot coordinates {(1,0) (2,0) (3,0.49) (4,1.62) (5,2.77) (6,4.21) (7,5.95) (8,7.10)};
+  \foreach \t/\v in {1/0, 2/0, 3/0.49, 4/1.62, 5/2.77, 6/4.21, 7/5.95, 8/7.10} \fill[hfAlert] (\t,\v) circle (1.8pt);
+  \node[hf/note, text=hfAlert, anchor=west] at (6.2,6.6) {no limit};
+  \draw[hfReader, line width=1pt] plot coordinates {(1,0) (2,0) (3,0.066) (4,0.066) (5,0.066) (6,0.066) (7,0.066) (8,0.066)};
+  \node[hf/note, text=hfReader, anchor=south west] at (5.2,0.2) {skip above 64 KiB};
+\end{tikzpicture}
+\caption{The two runs above. Without a limit, a client that doesn't read costs
+the server more than a megabyte every second. With the limit, the queue stops at
+64 KiB.}
+\end{figure}
+
+The two seconds at zero don't mean there was no problem. They are the operating
+system's buffers, on both ends, filling up before Node's own queue starts to
+grow. And the experiment is exaggerated on purpose: at a real rate of one
+picture every half second, the same stalled client would take hours to cost
+anything worth noticing. The leak is real and slow, and the fast loop only
+compresses time.
+
+\begin{concept}{Backpressure}
+The signal a slow consumer sends back to a fast producer: stop, or slow down.
+When the producer can't slow down, it has to choose what to do with what it
+can't deliver: block, keep it in memory, or throw it away.
+
+\textbf{What it fixes:} one slow reader can't grow the producer's memory until
+the process dies.
+
+\textbf{What it costs:} a decision about which data is allowed to be lost, and
+it has to be made for each stream separately.
+\end{concept}
+
+For a live picture of the plant the decision is easy. A screen only needs the
+latest picture, and an older one that arrives late is worse than none. So a
+client whose queue is too long skips ticks until it drains, and then gets the
+current picture. This is the same reasoning as the queue of one for the screen
+in Chapter~2. A stream that is being recorded is the opposite case: skipping is
+data loss, and the reader has to be able to tell that it missed something,
+which takes a sequence number in every message.
+
+\section{Is anyone there?}
+
+Skipping protects the server's memory from a slow client. A dead client is a
+different problem. If a laptop is closed or a cable is pulled, no packet
+announces it. The server's socket stays open and looks healthy, and the server
+keeps queueing data for it.
+
+\begin{history}{1989 \textperiodcentered{} Two hours of silence}
+TCP has a keep-alive of its own, but RFC~1122, the 1989 rules for Internet
+hosts, made it optional and said that if it's used, the default interval must be
+at least two hours. The worry at the time was cost: a probe packet on a link
+billed by the packet, to check on a connection nobody was using. Most operating
+systems still default to two hours. That's why protocols that need to know
+sooner, from OPC UA's keep-alive in Chapter~2 to WebSocket, carry their own.
+\end{history}
+
+WebSocket's own check is made of frames, so first, what a frame is. After the
+handshake, everything that travels on the connection is a \emph{frame}: a header
+of two bytes or more, then the content. The first byte says what kind of frame
+it is, in its last four bits, a number called the \emph{opcode}: 1 is text, 2 is
+binary, 8 is close, 9 is \emph{ping} and 10 is \emph{pong}. The second byte
+gives the length, and says whether the frame is masked. Here are three frames
+from a real connection, in hexadecimal, as a client that reads raw bytes saw
+them:
+
+\begin{terminal}
+client got: 81 02 68 69
+client got: 89 00
+client sends: 8a 80 12 34 56 78
+\end{terminal}
+
+The first is a text frame. In \texttt{81}, the 8 says this is the last piece of
+its message and the 1 says text; \texttt{02} is the length, and \texttt{68 69}
+is ``hi''. The second, \texttt{89 00}, is a ping with nothing inside: two bytes
+in all. The third is the answer going back. In \texttt{8a}, the \texttt{a} is
+10, a pong; \texttt{80} says masked, length zero; and the last four bytes are
+the mask, which every frame from a client carries, as the masking story earlier
+in the chapter explained. In this test the client answered by hand. A browser
+does it by itself.
+
+Ping and pong are \emph{control frames}. They belong to the connection, not to
+the application. In Figure~\ref{fig:buffers}, a ping is made by the WebSocket
+library when your code calls \texttt{ping()}, and travels down the same path as
+a picture. On the client it stops one floor early: the browser answers it with a
+pong on its own, and the page never finds out. The browser's WebSocket API
+doesn't even have an event for pings. Back on the server, the library tells your
+code with a \texttt{pong} event.
+
+That's enough to find a dead client. The server checks its clients in rounds,
+on a slow timer, every thirty seconds or so. In each round it looks at every
+connection. One that has answered since the last round is marked as unknown and
+pinged again. One that is still unknown never answered the last ping, and gets
+closed.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=-0.75cm]
+  \node[hf/reader, minimum width=17mm] at (0,0) {page A};
+  \node[hf/reader, minimum width=17mm] at (2.8,0) {browser A};
+  \node[hf/reader, minimum width=17mm] at (6.1,0) {server};
+  \node[hf/reader, minimum width=17mm] at (9.4,0) {laptop B};
+  \draw[hf/lifeline] (0,0.7) -- (0,7.4);
+  \draw[hf/lifeline] (2.8,0.7) -- (2.8,7.4);
+  \draw[hf/lifeline] (6.1,0.7) -- (6.1,7.4);
+  \draw[hf/lifeline] (9.4,0.7) -- (9.4,6.3);
+  % an ordinary message goes all the way to the page
+  \draw[hf/push] (6.1,1.3) -- node[hf/note, above] {picture (text, 1)} (2.8,1.3);
+  \draw[hf/push] (2.8,1.7) -- node[hf/note, above] {\texttt{onmessage}} (0,1.7);
+  % round 1
+  \draw[black!35, dashed] (-0.9,2.4) -- (10.3,2.4);
+  \node[hf/note, anchor=east] at (-1.0,2.4) {round 1};
+  \draw[hf/push] (6.1,3.2) -- node[hf/note, above] {ping (9)} (2.8,3.2);
+  \draw[hf/push] (6.1,3.6) -- node[hf/note, above] {ping (9)} (9.4,3.6);
+  \draw[hf/answer] (2.8,4.1) -- node[hf/note, above] {pong (10)} (6.1,4.1);
+  \node[hf/note, text=hfAlert, anchor=east] at (9.3,4.4) {no answer};
+  \node[hf/note, fill=white, align=center] at (0,3.5) {never sees\\the ping};
+  % round 2
+  \draw[black!35, dashed] (-0.9,5.0) -- (10.3,5.0);
+  \node[hf/note, anchor=east, align=right] at (-1.0,5.0) {round 2,\\30\,s later};
+  \draw[hf/push] (6.1,5.8) -- node[hf/note, above] {ping (9)} (2.8,5.8);
+  \draw[hf/pain, -{Stealth[length=2.2mm]}] (6.1,6.3) -- node[hf/note, above, text=hfAlert] {still unknown: close} (9.4,6.3);
+  \draw[hf/answer] (2.8,6.8) -- node[hf/note, above] {pong (10)} (6.1,6.8);
+\end{tikzpicture}
+\caption{Two rounds of the check. A picture goes all the way to the page; a ping
+stops at the browser, which answers it by itself. Browser A answers every round
+and stays. Laptop B, closed, doesn't answer round 1, and in round 2 the server
+closes its connection.}
+\label{fig:heartbeat}
+\end{figure}
+
+In Node, with \texttt{ws}, the whole check is a timer and a flag on each
+connection:
+
+\begin{code}
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (!ws.isAlive) { ws.terminate(); continue; } // didn't answer last round
+    ws.isAlive = false;                             // unknown until it answers
+    ws.ping();
+  }
+}, 30_000);
+
+wss.on('connection', (ws) => {
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+});
+\end{code}
+
+In a test with rounds of one second instead of thirty, there were two clients:
+A, a real WebSocket client, and B, a program that did the handshake and then
+went silent. A answered at 1.0, 2.0 and 3.0 seconds. B was closed at 2.0 seconds, in
+the second round after it connected, which is the worst case: a dead client
+lasts at most two rounds.
+
+\section{A failure is data}
+
+The last two sections were about the browser's side of the backend: a browser
+that stops reading, a browser that disappears. The backend has another side,
+the plant, and that side fails too. Every half second, the timer reads the plant
+over OPC UA, as in Chapter~2, and pushes the picture. Sooner or later one of
+those reads will fail: the plant's server restarts, the network drops for a few
+seconds, the plant's server crashes. This section is about what the backend,
+and the operator's screen, should do then.
+
+The first instinct is the one most code has for something going wrong: the read
+throws an error, \texttt{connection closed}. In a function called by a timer,
+that's a bad idea, because nobody is there to catch it. Your code didn't call
+the function, Node's timer did, and there's no \texttt{try} around it. The
+program below is that situation reduced to three lines: a timer whose function
+fails on its first tick, the way a read of a plant that's gone would fail. It
+prints \texttt{streaming} when it starts:
+
+\begin{code}
+setInterval(async () => {
+  throw new Error('connection closed');
+}, 500);
+console.log('streaming');
+\end{code}
+
+\begin{terminal}
+$ node crash.js
+streaming
+Error: connection closed
+    at Timeout._onTimeout (file:///.../crash.js:2:9)
+$ echo $?
+1
+\end{terminal}
+
+Half a second after it started, the process was dead. \texttt{echo \$?} prints
+the exit code of the last program, and 1 means it ended in failure. In the real
+backend, that's one hiccup in the plant's network killing the whole server, and
+with it the connection of every operator's screen. The function is
+\texttt{async}, so the error doesn't come out as a plain exception but as a
+rejected promise.
+
+\begin{concept}{Promise}
+An object that stands for a result that isn't ready yet. A function that has to
+wait (for the network, a disk, a timer) returns a promise at once, and later the
+promise \emph{resolves} with the value or \emph{rejects} with an error. Whoever
+holds it can wait for it with \texttt{await}, or attach handlers with
+\texttt{.then()} and \texttt{.catch()}. A function marked \texttt{async} always
+returns a promise: what it returns becomes the value, and what it throws becomes
+the rejection. When a promise settles, the code waiting for it doesn't run on
+the spot: it goes into the microtask queue from Chapter~3, and runs as soon as
+the current callback ends.
+
+\textbf{What it fixes:} code that waits reads in order, top to bottom, and a
+failure travels back to whoever is waiting, the way an exception does in code
+that doesn't wait.
+
+\textbf{What it costs:} the error only reaches someone who is waiting. If nobody
+awaits the promise or attaches a \texttt{.catch()}, the rejection has nowhere to
+go. That's the timer above: \texttt{setInterval} calls the function and ignores
+the promise it returns.
+\end{concept}
+
+Nobody was waiting for this one, and for years Node handled that case
+differently.
+
+\begin{history}{1976--2020 \textperiodcentered{} Promises, and the ones nobody waited for}
+The idea is older than JavaScript. Daniel Friedman and David Wise used the word
+\emph{promise} in 1976, and Henry Baker and Carl Hewitt called the same thing a
+\emph{future} in 1977: a placeholder for a value that is still being computed
+somewhere else. In 1988, Barbara Liskov and Liuba Shrira used promises for calls
+between machines.
+
+JavaScript got there through pain. Node's API was built on callbacks: you passed
+a function to be called with the error or the result when the work was done.
+Every step that waited nested the code one level deeper, ``callback hell'', and
+every level had to pass errors along by hand. Reading two files, writing them
+together into a third and reading that back takes four steps, and four steps
+make a pyramid:
+
+\begin{center}
+\setbox0\hbox{\ttfamily\scriptsize 0}\edef\hfcw{\the\wd0}%
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \def\q{\textquotesingle}
+  \tikzset{ln/.style={anchor=west, inner sep=0pt, font=\ttfamily\scriptsize, text=black!80},
+    er/.style={ln, text=hfAlert}}
+  \def\lh{0.37}
+  % the pyramid: the empty space the indentation leaves
+  \fill[hfAlert!8] (0,0.15) -- (8*\hfcw,{-8*\lh}) -- (0,{-12*\lh-0.15}) -- cycle;
+  \node[ln] at (0,0) {fs.readFile(\q a.txt\q, \q utf8\q, (err, a) => \{};
+  \node[er] at (2*\hfcw,{-1*\lh}) {if (err) return console.error(err);};
+  \node[ln] at (2*\hfcw,{-2*\lh}) {fs.readFile(\q b.txt\q, \q utf8\q, (err, b) => \{};
+  \node[er] at (4*\hfcw,{-3*\lh}) {if (err) return console.error(err);};
+  \node[ln] at (4*\hfcw,{-4*\lh}) {fs.writeFile(\q ab.txt\q, a + b, (err) => \{};
+  \node[er] at (6*\hfcw,{-5*\lh}) {if (err) return console.error(err);};
+  \node[ln] at (6*\hfcw,{-6*\lh}) {fs.readFile(\q ab.txt\q, \q utf8\q, (err, ab) => \{};
+  \node[er] at (8*\hfcw,{-7*\lh}) {if (err) return console.error(err);};
+  \node[ln] at (8*\hfcw,{-8*\lh}) {console.log(ab);};
+  \node[ln] at (6*\hfcw,{-9*\lh}) {\});};
+  \node[ln] at (4*\hfcw,{-10*\lh}) {\});};
+  \node[ln] at (2*\hfcw,{-11*\lh}) {\});};
+  \node[ln] at (0,{-12*\lh}) {\});};
+  \node[hf/note, text=hfAlert, anchor=north west, align=left] at (0,{-12*\lh-0.3})
+    {callbacks: one level deeper per step,\\and the error handled by hand on each};
+  % the same four steps, flat
+  \begin{scope}[xshift=7.5cm, yshift={-9*\lh cm}]
+    \node[ln] at (0,0) {const a = await readFile(\q a.txt\q, \q utf8\q);};
+    \node[ln] at (0,{-1*\lh}) {const b = await readFile(\q b.txt\q, \q utf8\q);};
+    \node[ln] at (0,{-2*\lh}) {await writeFile(\q ab.txt\q, a + b);};
+    \node[ln] at (0,{-3*\lh}) {console.log(await readFile(\q ab.txt\q, \q utf8\q));};
+    \node[hf/note, text=hfReader, anchor=north west, align=left] at (0,{-3*\lh-0.3})
+      {\texttt{await}: one line per step, and a failure\\travels by itself to whoever is waiting};
+  \end{scope}
+\end{tikzpicture}
+\end{center}
+
+The two programs do the same work: with \texttt{one} in \texttt{a.txt} and
+\texttt{two} in \texttt{b.txt}, both print \texttt{one two}. Only the shape
+changes. Libraries filled the gap: Kris
+Zyp's Promises/A for CommonJS in 2009, jQuery's Deferred in 2011, and
+Promises/A+ in 2012, a short specification that made the libraries work with
+each other. ES2015 put \texttt{Promise} in the language, and ES2017 added
+\texttt{async} and \texttt{await}.
+
+When a promise fails and nobody is waiting for it, the failure is an
+\emph{unhandled rejection}. For years, Node only printed a warning about it and
+went on running, in a state nobody had planned for. From Node~7, in 2016, the
+warning said that a future version would end the process instead. Node~15, in October 2020, made
+that the default: an unhandled rejection now kills the process, the same as an
+uncaught exception always had.
+\end{history}
+
+Catching the error and writing it to a log would keep the process alive, but
+it fixes only half the problem. The browser would still know nothing: the
+pictures would stop coming, and the screen would go on showing the last numbers
+it got, as if the plant were steady. That's where the title of this section
+comes from. A lost plant isn't an accident; it's a state the system will be in,
+sooner or later, so it belongs in the data, not in an error. Each message to
+the browser says whether the backend is connected to the plant or
+reconnecting, and while it's reconnecting, the picture is empty. The backend retries with the exponential
+backoff from Chapter~2, forever, and the browser sees the state change as it
+happens.
+
+This is the rule about data quality from Chapter~2, applied one hop further:
+the browser can't tell a steady plant from a dead connection unless somebody
+tells it. A screen that keeps showing the last numbers after the plant is gone
+is lying.
+
+\section{One definition of the message}
+
+The last section changed the message. It used to be just the 53 numbers of the
+plant; now it also says whether the backend is connected to the plant, and the
+numbers can be missing. A change like that has to happen in two programs at
+once: the backend, which writes the message, and the browser, which reads it.
+They are different programs, possibly in different repositories. If each one
+writes down the shape of the message on its own, sooner or later the two will
+disagree, and nothing will warn anyone. This section is about writing that shape
+down once.
+
+There is also a quieter problem, at the point where values from the plant
+enter the backend:
+
+\begin{code}
+const raw = ['2696.1', 'n/a', '74.2'];
+console.log(JSON.stringify({ values: raw.map(Number) }));
+\end{code}
+
+\begin{terminal}
+$ node nan.js
+{"values":[2696.1,null,74.2]}
+\end{terminal}
+
+\texttt{Number('n/a')} is \texttt{NaN}. JSON has no way to write \texttt{NaN},
+so \texttt{JSON.stringify} quietly writes \texttt{null}, and the screen receives
+a hole in the middle of a list of numbers with no error anywhere. The type
+system can't help: \texttt{NaN} is a number.
+
+\begin{history}{1987--2009 \textperiodcentered{} Interface definitions}
+Programs that talk to each other have been describing their messages in a
+separate, neutral language for a long time. Sun's RPC used XDR, from 1987, with
+a tool that generated the C code for both ends. CORBA, in 1991, had its IDL.
+Google released Protocol Buffers in 2008. When JSON took over the web, it came
+without any of that: Douglas Crockford's format, from 2001, describes values,
+not their shapes. In 2009, Kris Zyp published the first draft of
+\textbf{JSON Schema}, a way to describe the shape of JSON in JSON. It never
+became an RFC, its current version is called 2020-12, and it's what most tools
+that need a language-neutral contract for JSON read and write.
+\end{history}
+
+With a library like zod (Chapter~3), the shape is written once, in code, and
+three things come out of it: the TypeScript type, a check that runs on real
+data, and a JSON Schema for programs written elsewhere.
+
+\begin{code}
+import { z } from 'zod';
+
+const Reading = z.object({
+  status: z.enum(['connected', 'reconnecting']),
+  values: z.array(z.number()).length(3).nullable(),
+});
+
+export type Reading = z.infer<typeof Reading>;
+console.log(JSON.stringify(z.toJSONSchema(Reading), null, 2));
+\end{code}
+
+\begin{terminal}
+$ node toschema.ts
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "connected",
+        "reconnecting"
+      ]
+    },
+    "values": {
+      "anyOf": [
+        {
+          "minItems": 3,
+          "maxItems": 3,
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "status",
+    "values"
+  ],
+  "additionalProperties": false
+}
+\end{terminal}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[hf/bus, minimum width=34mm, minimum height=12mm] (s) {one schema};
+  \node[hf/reader, right=20mm of s, yshift=14mm, minimum width=36mm] (t) {TypeScript type\\{\footnotesize checked while compiling}};
+  \node[hf/reader, right=20mm of s, minimum width=36mm] (p) {runtime check\\{\footnotesize every value that comes in}};
+  \node[hf/source, right=20mm of s, yshift=-14mm, minimum width=36mm] (j) {JSON Schema file\\{\footnotesize committed}};
+  \node[hf/reader, right=12mm of j, minimum width=26mm] (w) {browser code\\{\footnotesize its own types}};
+  \draw[hf/flow, black!60] (s.east) -- (t.west);
+  \draw[hf/flow, black!60] (s.east) -- (p.west);
+  \draw[hf/flow, black!60] (s.east) -- (j.west);
+  \draw[hf/flow, black!60] (j) -- (w);
+\end{tikzpicture}
+\caption{The shape of the message is written once. The other program never
+reads the backend's code, only the generated file.}
+\end{figure}
+
+\begin{concept}{Schema as contract}
+The shape of a message between two programs is defined in one place, and every
+other representation (types, runtime checks, documentation, code in another
+language) is generated from it.
+
+\textbf{What it fixes:} the two sides can't drift apart silently, and a bad
+value is rejected where it enters instead of reaching the screen as a hole.
+
+\textbf{What it costs:} a generation step, and a generated file that can fall
+out of date. The usual guard is a test that regenerates it and fails if the
+result differs from what's committed.
+\end{concept}
+
+There is one trap in validating where data enters. When a read from the plant
+fails the check, it's tempting to send it down the same path as a lost
+connection, and then the screen says ``reconnecting'' about a plant that is
+perfectly reachable and sending something wrong. ``The source is gone'' and
+``the source is sending garbage'' are different states, and an operator needs to
+know which one is happening.
+
+\section{A source you can swap}
+
+The screen has to be built and tested by people who don't always have a plant
+running. So the backend shouldn't decide by itself where the picture comes
+from.
+
+\begin{history}{2004--2007 \textperiodcentered{} Injection and doubles}
+In January 2004, Martin Fowler wrote an article about the containers that were
+then appearing in Java, and gave a name to what they did: \textbf{dependency
+injection}. An object doesn't build the things it depends on; it receives them
+from outside, so whoever builds it chooses. In 2007, Gerard Meszaros's
+\emph{xUnit Test Patterns} sorted out the vocabulary for what tests put in
+those places (dummies, stubs, fakes, mocks) under one name, the \textbf{test
+double}, after the stunt double who stands in for an actor.
+\end{history}
+
+In a small backend, injection needs no container. The function that builds the
+application receives the source of the picture as a parameter: a function that
+returns the next message. The program decides, when it starts, which one to
+pass. In production, it's the plant. In tests, it's a fake that returns invented
+numbers instantly. On a developer's machine without a plant, it's a recording:
+a file of past pictures played back in a loop.
+
+A recording has one rule that matters. If it picks the row to serve by counting
+calls, every extra reader of the source (a second tab, a test, a health check)
+makes it skip rows. If it picks the row by the clock, any number of readers see
+the same moment.
+
+And a replay must say that it's a replay. A recording played back with the
+status ``connected'' looks exactly like a live plant, and sooner or later
+somebody leaves it switched on where it shouldn't be. Every message should say
+where it came from.
+
+\section{What it costs}
+
+The backend now holds one session with the plant and an open connection with
+every browser, and it is responsible for both. It has to notice when either end
+dies, decide what a slow reader is allowed to lose, and say in every message
+whether the data is live. A page that asked every half second needed none of
+that. Each of those responsibilities is the price of the server being able to
+speak first.
+
+\section*{Further reading}
+
+\begin{itemize}
+  \item I.\ Fette and A.\ Melnikov, \emph{The WebSocket Protocol}, RFC~6455,
+        2011, \url{https://www.rfc-editor.org/rfc/rfc6455}.
+  \item WHATWG, \emph{HTML Living Standard}, section ``Server-sent events'',
+        \url{https://html.spec.whatwg.org/multipage/server-sent-events.html}.
+  \item J.~J.\ Garrett, ``Ajax: A New Approach to Web Applications'', 2005.
+  \item L.-S.\ Huang, E.\ Chen, A.\ Barth, E.\ Rescorla and C.\ Jackson,
+        ``Talking to Yourself for Fun and Profit'', 2010.
+  \item V.\ Cerf and R.\ Kahn, ``A Protocol for Packet Network
+        Intercommunication'', \emph{IEEE Transactions on Communications} 22(5),
+        1974.
+  \item R.\ Braden (ed.), \emph{Requirements for Internet Hosts --
+        Communication Layers}, RFC~1122, 1989.
+  \item Reactive Streams, \url{https://www.reactive-streams.org}.
+  \item JSON Schema, \url{https://json-schema.org}.
+  \item M.\ Fowler, ``Inversion of Control Containers and the Dependency
+        Injection pattern'', 2004,
+        \url{https://martinfowler.com/articles/injection.html}.
+  \item G.\ Meszaros, \emph{xUnit Test Patterns}, Addison-Wesley, 2007.
+\end{itemize}

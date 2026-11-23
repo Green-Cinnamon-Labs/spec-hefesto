@@ -1,0 +1,1286 @@
+\chapter{Before the First Feature}
+
+The screen backend from the last chapter holds a session with the plant, keeps
+the last value of every node and pushes changes to the browsers. Before it can
+do any of that, it has to exist as a program: a process that starts, listens on
+a port and answers.
+
+It's written in JavaScript, running on Node, because there is a mature OPC UA
+client for Node and because the browser on the other side speaks the same
+language. A Node server in 2026 is assembled from a dozen tools that weren't
+there in 2009: a compiler, a module system, a lock file, a framework, a schema
+library, a linter, a formatter, a test runner. Each one has a history, and
+almost all of them exist for the same reason: to make a mistake show up
+earlier.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.8cm, y=-0.78cm]
+  \foreach \x/\s in {0/lint, 1/typecheck, 2/test, 3/startup, 4/a request, 5/someone\\notices} {
+    \node[hf/note, anchor=south, font=\sffamily\footnotesize\bfseries] at (\x,0.2) {\s};
+    \draw[hf/lifeline] (\x,0.35) -- (\x,4.6);
+  }
+  \foreach \y/\t/\from/\to in {
+      1/a misspelled method/4/1,
+      2/a promise nobody waits for/5/0,
+      3/an invalid setting/4/3,
+      4/a route that stops answering/5/2} {
+    \node[hf/note, anchor=east, align=right] at (-0.25,\y) {\t};
+    \fill[hfAlert] (\from,\y) circle (2.6pt);
+    \fill[hfReader] (\to,\y) circle (2.6pt);
+    \draw[hf/ask, shorten >=3pt, shorten <=3pt] (\from,\y) -- (\to,\y);
+  }
+\end{tikzpicture}
+\caption{Where a mistake shows up. Red: with only Node and a text editor. Blue:
+after the tools in this chapter. Each tool moves one kind of mistake to the
+left, closer to the person who made it.}
+\end{figure}
+
+\section{What Node is}
+
+\begin{history}{1999--2009 \textperiodcentered{} Ten thousand connections}
+In 1999, Dan Kegel published ``The C10K problem'': how to make one server handle
+ten thousand clients at once. The standard design of the time, Apache's, gave
+each connection its own process or thread. A thread costs memory even when it's
+doing nothing, and most of a web connection's life is doing nothing: waiting
+for the network, the disk, a database. Ten thousand connections meant ten
+thousand threads, almost all of them asleep.
+
+The answer was to let one thread wait on all the connections at once and only
+act when one of them had something. Operating systems added the calls for it
+(\texttt{epoll} on Linux in 2002, \texttt{kqueue} on BSD in 2000), and in 2004
+Igor Sysoev released nginx, a web server built around one loop.
+
+Writing applications that way was still painful, because every library in
+every language assumed it could block. In 2008 Google released Chrome with V8,
+a fast JavaScript engine from Lars Bak's team in Denmark. Ryan Dahl noticed
+that JavaScript was the one popular language with no blocking I/O libraries at
+all: in the browser, everything was already a callback. In November 2009, at
+JSConf EU in Berlin, he presented Node: V8 plus an event loop plus a set of
+libraries in which nothing blocks. He had started from a small problem: an
+upload progress bar, which is hard to build on a server that can't report
+anything while it's still receiving the file.
+\end{history}
+
+\begin{concept}{Event loop}
+One thread runs all the program's code. When the code needs to wait (for a
+socket, a file, a timer), it registers a callback and returns. The loop asks
+the operating system which waits are over and runs the callbacks for those,
+one at a time.
+
+\textbf{What it fixes:} a thousand idle connections cost a thousand small
+objects, not a thousand threads.
+
+\textbf{What it costs:} while one callback is computing, nobody else runs. A
+loop that takes two seconds to parse a file freezes every connection for two
+seconds.
+\end{concept}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1mm, y=1mm]
+  % threads
+  \node[hf/note, anchor=south west, font=\sffamily\footnotesize\bfseries] at (0,30) {one thread per connection};
+  \foreach \r in {0,1,2,3} {
+    \pgfmathsetmacro{\y}{24-7*\r}
+    \fill[black!8] (0,\y) rectangle (62,\y+4);
+    \node[hf/note, anchor=east] at (-1,\y+2) {thread \the\numexpr\r+1\relax};
+  }
+  \foreach \x/\r in {2/0, 30/0, 9/1, 44/1, 16/2, 51/2, 23/3, 37/3} {
+    \pgfmathsetmacro{\y}{24-7*\r}
+    \fill[hfReader] (\x,\y) rectangle (\x+4,\y+4);
+  }
+  \node[hf/note] at (31,-1) {mostly asleep, each with its own memory};
+  % loop
+  \begin{scope}[xshift=72mm]
+    \node[hf/note, anchor=south west, font=\sffamily\footnotesize\bfseries] at (0,30) {one event loop};
+    \fill[black!8] (0,13.5) rectangle (62,17.5);
+    \node[hf/note, anchor=east] at (-1,15.5) {loop};
+    \foreach \x/\n in {2/1, 9/2, 16/3, 23/4, 30/1, 37/4, 44/2, 51/3} {
+      \fill[hfReader] (\x,13.5) rectangle (\x+4,17.5);
+      \node[font=\sffamily\tiny, text=white] at (\x+2,15.5) {\n};
+    }
+    \node[hf/note] at (31,6) {the same work, one thread;\\the OS watches the sockets};
+  \end{scope}
+\end{tikzpicture}
+\caption{Four connections, the same work. On the left, four threads that spend
+most of their time waiting. On the right, one loop that runs each piece of work
+when its data arrives.}
+\end{figure}
+
+Dahl's description, V8 plus an event loop plus libraries in which nothing
+blocks, names Node's three parts. None of them was new, and each came from
+somewhere else.
+
+The first is the \textbf{engine}. The JavaScript language, as its specification
+defines it, has no input or output at all: no files, no network, not even
+\texttt{setTimeout}. An engine like V8 runs the language and nothing more. It
+turns your code into machine instructions, keeps the objects your code creates
+in a region of memory called the \emph{heap}, and keeps track of which function
+is running on the \emph{call stack}: each call puts an entry on top, each return
+takes one off. Whatever program hosts the engine has to supply the rest. For
+most of its first fifteen years, the host that mattered was the browser, which
+supplied the page, the clicks and the network requests. V8 was written to be
+hosted by other programs too: Google published it in 2008 as a C++ library any
+program could embed, and that's what Dahl did.
+
+The second is the \textbf{loop}, and Dahl didn't write his own. Node~0.1 used
+libev, an event loop for Unix that Marc Lehmann had published in 2007, which
+waits on sockets with \texttt{epoll} or \texttt{kqueue}, the calls from the
+C10K story. Files were a different problem. Linux had no way to ask for a read
+of an ordinary file and be told later when it was done, so Node used another of
+Lehmann's libraries, libeio, which does each read on a small pool of threads:
+the thread blocks on the read so the loop doesn't have to. In 2011, Joyent and
+Microsoft ported Node to Windows, where neither library ran. The port produced
+libuv, which at first wrapped libev and libeio on Unix and, on Windows, IOCP,
+the system's own way of waiting on many sockets. Later it replaced Lehmann's two
+libraries with its own code. libuv kept the same
+split: sockets go to the operating system, and whatever can only block goes to
+a pool of four threads.
+
+The pool is the part most often drawn wrong. The diagram of Node that circulates
+most on the web puts \emph{network} among the worker threads, and that's a
+mistake. Sockets never touch the pool: the loop hands them to the operating
+system, which watches all of them for one thread. The pool is for the work that
+has no such call on every system: reading files, some cryptography and
+compression, and looking a name up in DNS, whose system call, \texttt{getaddrinfo},
+blocks. The difference is easy to see. With the four pool threads busy
+computing four slow password hashes (\texttt{crypto.pbkdf2}, which runs on the
+pool), a request to a server on the same machine took 22 milliseconds when the
+address was \texttt{127.0.0.1} and 1.7 seconds when it was \texttt{localhost}.
+The number needs no lookup and goes straight to the operating system. The name
+had to wait in line for a free thread, and one hash takes 1.5 seconds.
+
+The third part is what lets JavaScript reach the other two. V8 and libuv are
+libraries written in C and C++, and JavaScript can't call a C function by
+itself. The connection is a \textbf{binding}: a C++ function registered in the
+engine under a JavaScript name, so that when your code calls that name, the
+engine runs the C++ function instead. The idea is as old as scripting
+languages. John Ousterhout designed Tcl in 1988 to be embedded in C programs,
+and each program added commands of its own, written in C, that Tcl scripts
+could call by name. Node has a binding for each thing its libraries need from
+below: open a socket, read a file, start a timer. On top of the bindings sits
+Node's standard library (\texttt{node:http}, \texttt{node:fs},
+\texttt{node:net}), ordinary JavaScript that gives those calls a friendlier
+shape. Figure~\ref{fig:node-layers} puts the parts together.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    layer/.style={draw=hfBus, fill=hfBus!6, rounded corners=3pt, line width=0.8pt},
+    part/.style={hf/base, draw=hfBus, fill=white, minimum width=24mm, font=\sffamily\footnotesize},
+    small/.style={hf/base, draw=hfReader, dashed, fill=hfReader!5, minimum width=24mm, font=\sffamily\footnotesize},
+    ph/.style={hf/base, draw=hfBus, fill=white, font=\sffamily\scriptsize, inner sep=2pt, minimum width=12mm},
+    both/.style={{Stealth[length=2.2mm]}-{Stealth[length=2.2mm]}, line width=0.8pt, black!55},
+  }
+  % your code and V8
+  \node[hf/reader, minimum width=30mm, minimum height=9mm] (app) at (0,3.45) {your code\\{\footnotesize JavaScript}};
+  \draw[layer] (-1.5,-1.6) rectangle (1.5,2.55);
+  \node[font=\sffamily\bfseries] at (0,2.2) {V8};
+  \node[hf/note] at (0,1.8) {runs JavaScript};
+  \node[part] at (0,1.1) {call stack};
+  \node[part] at (0,0.35) {heap};
+  \draw[both] (app.south) -- (0,2.55);
+  % Node
+  \draw[layer] (2.0,-1.6) rectangle (4.8,3.9);
+  \node[font=\sffamily\bfseries] at (3.4,3.55) {Node};
+  \node[part] at (3.4,2.55) {standard library\\{\scriptsize \texttt{node:http}, \texttt{node:fs}}\\{\scriptsize JavaScript}};
+  \node[part] (bind) at (3.4,-0.45) {bindings\\{\scriptsize C++}};
+  \draw[both] (1.5,-0.45) -- (bind.west);
+  \draw[both] (3.4,1.95) -- (bind.north);
+  % libuv
+  \draw[layer] (5.3,-1.6) rectangle (12.4,3.9);
+  \node[font=\sffamily\bfseries] at (8.85,3.55) {libuv};
+  \draw[both] (bind.east) -- (5.3,-0.45);
+  \node[font=\sffamily\footnotesize\bfseries, text=hfBus] at (7.6,1.0) {event loop};
+  \draw[hfBus, line width=1.4pt, -{Stealth[length=3mm]}] (7.6,2.45) arc[start angle=90, end angle=-225, radius=1.45];
+  \coordinate (pol) at (8.6,-0.05);
+  \node[hf/note, font=\sffamily\footnotesize\bfseries] at (11.15,3.0) {thread pool};
+  \foreach \y/\n in {2.4/1, 1.75/2, 1.1/3, 0.45/4}
+    \node[hf/source, minimum width=16mm, minimum height=4.5mm, font=\sffamily\scriptsize, inner sep=1pt] (t\n) at (11.15,\y) {thread \n};
+  % operating system
+  \node[hf/source, minimum width=103mm, minimum height=8mm] (os) at (7.2,-2.55)
+    {operating system \quad {\footnotesize \texttt{epoll} (Linux), \texttt{kqueue} (macOS, BSD), IOCP (Windows)}};
+  \draw[both] (pol) -- (pol |- os.north) node[midway, right, hf/note] {sockets};
+  \draw[both] (t4.south) -- (t4.south |- os.north) node[midway, left, hf/note, align=right] {files, DNS,\\crypto};
+\end{tikzpicture}
+\caption{Where Node sits. V8 runs the JavaScript, yours and Node's standard
+library; the bindings connect it to libuv, which owns the event loop and a pool
+of four threads. The operating system does the waiting: it watches the sockets
+for the loop and runs the blocking calls for the pool.}
+\label{fig:node-layers}
+\end{figure}
+
+That combination, an engine with what it needs to touch the world, is a
+\emph{runtime}.
+
+Node is a runtime, and the difference between a runtime and a framework comes
+down to who calls whom.
+
+\begin{history}{1985--1988 \textperiodcentered{} Don't call us, we'll call you}
+In 1985, Richard Sweet described the Mesa programming environment at Xerox
+PARC and named one of its rules ``Hollywood's Law'': \emph{don't call us,
+we'll call you}. The user interface code called the application when something
+happened, never the other way around. In 1988, Ralph Johnson and Brian Foote
+used that inversion to define a \textbf{framework} in ``Designing Reusable
+Classes'': a set of classes that make up a design for a family of programs,
+where the framework holds the flow of control and calls the code you plug into
+it.
+\end{history}
+
+\begin{concept}{Runtime, library, framework}
+A \emph{runtime} runs your program and gives it access to the machine: memory,
+time, files, network. A \emph{library} is code you call: you decide when, and
+it returns. A \emph{framework} is code that calls you: it owns the flow, and you
+fill in the parts it leaves open, like what to do when a request arrives on a
+given route.
+
+\textbf{What it fixes:} the framework already made the decisions every program
+of that kind needs (routing, parsing, errors), so you only write the part that
+is different.
+
+\textbf{What it costs:} you write your program the framework's way, and leaving
+it later means rewriting more than a few calls.
+\end{concept}
+
+Node gives you the runtime and some libraries, but no framework. Its
+\texttt{http} module parses the bytes of a request and hands you the result,
+and everything after that is yours to write.
+
+\begin{code}
+import http from 'node:http';
+
+http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/status') {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+  res.statusCode = 404;
+  res.end();
+}).listen(8080);
+\end{code}
+
+That works until a client adds anything to the address:
+
+\begin{terminal}
+GET  /status        -> 200
+GET  /status?x=1    -> 404
+POST /status        -> 404
+\end{terminal}
+
+\texttt{req.url} is the raw path with the query string attached, so comparing
+it as a string fails as soon as someone adds \texttt{?x=1}. Fixing that means
+parsing the URL. Answering the wrong method properly means another branch.
+Reading a body means collecting chunks from a stream and parsing them. Writing
+a server on the bare \texttt{http} module is a good way to learn what a request
+is, and a mistake past the first route.
+
+\section{What runs next}
+
+The event loop in Figure~\ref{fig:node-layers} runs one callback at a time. What
+decides which one comes next? The answer grew over ten years, in the browser and
+in Node at the same time, and its names only make sense in the order they
+appeared.
+
+\begin{history}{2008 \textperiodcentered{} A queue of tasks}
+Browsers had always run one thing at a time and kept the rest waiting, but no
+specification said in what order. In August 2008, Ian Hickson, editing the HTML5
+draft at the WHATWG, wrote it down: each page has an \emph{event loop}, and
+everything that happens later (a click, a timer, a finished download) goes into
+a \emph{task queue} as a \emph{task}. The loop takes one task, runs it to the
+end, and takes the next.
+\end{history}
+
+Node's loop works the same way, with more structure. libuv goes around in
+\emph{turns}, and each turn passes through the same stops, in the same order,
+called \emph{phases}. Each phase has its own queue, fed by one kind of event:
+
+\begin{itemize}
+\item \textbf{Timers} runs the callbacks of \texttt{setTimeout} and
+  \texttt{setInterval} whose time has come.
+\item \textbf{Pending} runs a few I/O callbacks the operating system left for
+  the next turn, such as some network errors. It rarely matters.
+\item \textbf{Poll} is the main stop. The loop asks the operating system which
+  sockets have data and which file reads have finished, and runs their
+  callbacks: a request coming in, a message from the plant. When no other
+  queue has anything, the loop sleeps here until something arrives or the next
+  timer is due.
+\item \textbf{Check} runs, right after poll, the callbacks scheduled for that
+  moment. Their story comes below.
+\item \textbf{Close} runs the callbacks of sockets and other handles that have
+  just closed.
+\end{itemize}
+
+Then the loop goes back to timers, and that is one turn. Each callback the loop
+runs from a phase is a task in Hickson's sense, though Node's documentation
+rarely uses the word.
+
+Since January 2010, Node has also had a way to run something \emph{between}
+two tasks. An object that announces events, like a server or a stream, has a
+problem when something goes wrong while it's still being created. If it
+announces the error right away, nobody is listening yet: the code that created
+it hasn't finished, so it hasn't attached a listener. \texttt{process.nextTick}
+solves that. The function you give it runs as soon as the current code
+finishes, before the loop moves on to anything else, and by then the listener
+is there. It's a second, small queue, and Node empties it after every task.
+
+The opposite wish, to run something only after the loop has looked at
+everything else that's waiting, got its tool from Microsoft. \texttt{setImmediate}
+was proposed for browsers in 2011 as ``Efficient Script Yielding'', shipped in
+Internet Explorer~10, was turned down by the other browsers, and landed in
+Node~0.10 in 2013, where it stayed as the check phase. Node's own documentation
+admits that the two names should be swapped: \texttt{nextTick} runs right away,
+and \texttt{setImmediate} on the next pass.
+
+The browser reached the same idea as \texttt{nextTick} a few years later, for a
+different reason.
+
+\begin{history}{2011--2012 \textperiodcentered{} A queue between tasks}
+In 2011, engineers from Google and Mozilla, among them Rafael Weinstein, Adam
+Klein and Jonas Sicking, were replacing the DOM's mutation events, which fired
+in the middle of every change to the page and made pages slow. Their
+replacement, \texttt{MutationObserver}, delivers the changes in a batch, at the
+end of the script that made them. One whole task later was too late, because
+the browser may draw the page between two tasks. In 2012 the HTML specification
+grew a second, small queue for that moment, emptied at a ``microtask
+checkpoint'' after each task. Its entries are \emph{microtasks}.
+\end{history}
+
+Then came promises. A promise is an object that stands for a result that isn't
+ready yet: a function that has to wait returns one at once, and whoever holds it
+attaches, with \texttt{.then()}, the code that should run when the result
+arrives. Chapter~4 tells where promises came from. Here the only question is
+which queue that code goes into, and by 2012 there were two to choose from.
+
+\begin{history}{2012--2018 \textperiodcentered{} Promises take the small queue}
+Promise libraries were many and didn't work with each other until their authors
+agreed on a short specification, Promises/A+. Version 1.0, in December 2012,
+required that a \texttt{then} callback never run before the code that
+registered it had finished. In August 2013, Isaac
+Schlueter, then Node's lead, explained why in ``Designing APIs for
+Asynchrony'': an API that calls its callback sometimes right away and sometimes
+later ``releases Zalgo'', and the code that uses it can't be reasoned about.
+Either queue met the rule, but a task waits behind every timer and socket in
+the loop, so the libraries that cared about speed used the small one.
+
+ES2015 put \texttt{Promise} in the language, and with it the first queue the
+language itself defines. The specification calls its entries \emph{jobs}: when
+a promise settles, its callbacks become jobs, and jobs run when no other code
+is running. The language says nothing more, because it has no event loop; the
+host picks the moment. Browsers and Node both run promise jobs as microtasks.
+\texttt{async} and \texttt{await} arrived on top of them in Node~7.6, in
+February 2017, a few months before ES2017 made them official. With them, a
+function can write \texttt{await} in front of a promise and stop there; the rest
+of the function becomes the \texttt{.then()} callback, so every line after an
+\texttt{await} runs as a microtask.
+
+The last change was in Node~11, in 2018. Until then, Node emptied the microtask
+queue only between phases, so a promise created in one timer callback waited
+until every other timer due in that turn had run. Browsers empty it after every
+callback, and the same code printed in a different order in the two. Node~11
+took the browser's rule. With two timers, where the first one resolves a
+promise, Node today prints the first timer, then the promise, then the second
+timer.
+\end{history}
+
+\begin{etymology}
+\emph{Micro-} and \emph{macro-} are Greek for small and large. Once there was a
+microtask, the old kind needed a name to tell it apart, and ``macrotask'' is
+that name, made after the fact, like \emph{acoustic guitar} after the electric
+one. In September 2013, version 1.1 of Promises/A+ put the two side by side: a
+library could defer a callback with a ``macro-task'' mechanism such as
+\texttt{setTimeout} or \texttt{setImmediate}, or with a ``micro-task'' mechanism
+such as \texttt{MutationObserver} or \texttt{process.nextTick}. The HTML
+specification never took the word. There it's still a task.
+\end{etymology}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.15cm, y=1cm]
+  \draw[black!40, line width=0.8pt] (-0.3,0) -- (10.3,0);
+  \foreach \yr/\up/\txt in {
+      2008/1/{HTML5 defines the event loop and its tasks},
+      2009/0/{Node~0.1 runs on libev},
+      2010/1/{\texttt{nextTick} in Node~0.1.26},
+      2011/0/{libuv, for Windows; mutation observers},
+      2012/1/{microtasks enter HTML; Promises/A+~1.0},
+      2013/0/{\texttt{setImmediate} in Node~0.10; Promises/A+~1.1 names the ``macro-\allowbreak{}task''},
+      2015/1/{\texttt{Promise} and its jobs in ES2015},
+      2017/0/{\texttt{async} and \texttt{await} in Node~7.6},
+      2018/1/{Node~11 empties microtasks after every callback}} {
+    \pgfmathsetmacro{\x}{\yr-2008}
+    \fill[hfBus] (\x,0) circle (2.4pt);
+    \node[hf/note, font=\sffamily\scriptsize\bfseries] at (\x,{\up ? -0.3 : 0.3}) {\yr};
+    \ifnum\up=1
+      \draw[black!25] (\x,0.1) -- (\x,0.55);
+      \node[hf/note, anchor=south, text width=22mm, font=\sffamily\scriptsize] at (\x,0.55) {\txt};
+    \else
+      \draw[black!25] (\x,-0.1) -- (\x,-0.55);
+      \node[hf/note, anchor=north, text width=22mm, font=\sffamily\scriptsize] at (\x,-0.55) {\txt};
+    \fi
+  }
+\end{tikzpicture}
+\caption{How the loop's queues got their names, from 2008 to 2018.}
+\end{figure}
+
+Put together, the names sort themselves. A task belongs to the host: libuv's
+phases in Node, the HTML event loop in a browser. A microtask belongs to the
+language: the queue that promises use is defined by the language and kept by
+the engine, V8, and the host only decides when to empty it. \texttt{process.nextTick} belongs to Node alone.
+After every task, Node empties \texttt{nextTick} first, then the microtasks,
+including any added along the way, and only then lets the loop move on.
+
+\begin{concept}{Tasks and microtasks}
+A \emph{task} (in blog posts, a macrotask) is one callback the host's loop runs
+because something outside the program happened: a timer, a socket, a file. A
+\emph{microtask} is a callback the program scheduled to run right after the
+current one, almost always a promise continuation. After every task, Node runs every
+microtask in the queue, including the ones added along the way, and only then
+moves on to the next task.
+
+\textbf{What it fixes:} the rest of an \texttt{async} function continues as
+soon as its value is ready, without waiting behind timers and sockets, and
+always after the current code, never in the middle of it.
+
+\textbf{What it costs:} microtasks can starve the loop. While their queue isn't
+empty, no timer fires, no socket is read and no request is answered.
+\end{concept}
+
+Four lines are enough to see the order, one for each queue:
+
+\begin{code}
+setTimeout(() => console.log('timer'), 0);
+Promise.resolve().then(() => console.log('promise'));
+process.nextTick(() => console.log('tick'));
+console.log('script');
+\end{code}
+
+\begin{terminal}
+$ node order.js
+script
+tick
+promise
+timer
+\end{terminal}
+
+The timer was set first, for zero milliseconds, and it came last. The
+\texttt{nextTick} was set after the promise, and it came before it.
+Figure~\ref{fig:order-frames} shows why, one moment at a time.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    fr/.style={hf/base, draw=hfReader, fill=hfReader!10, font=\ttfamily\scriptsize,
+      minimum width=23mm, minimum height=4.4mm, inner sep=1pt},
+    nq/.style={fr, dashed, draw=hfBus, fill=hfBus!4, minimum width=19mm},
+    mq/.style={fr, dashed, fill=hfReader!4, minimum width=19mm},
+    tq/.style={fr, draw=hfBus, fill=hfBus!10, minimum width=19mm},
+    printed/.style={font=\ttfamily\scriptsize, align=left, anchor=north west},
+    when/.style={hf/note, anchor=west, align=left, text width=31mm},
+    head/.style={hf/note, font=\sffamily\footnotesize\bfseries, align=center},
+    none/.style={hf/note, text=black!35},
+  }
+  \def\rh{1.5}
+  \node[head] at (4.75,0.8) {call stack};
+  \node[head, text=hfBus] at (7.05,0.8) {\texttt{nextTick}\\queue};
+  \node[head, text=hfReader] at (9.15,0.8) {microtask\\queue};
+  \node[head, text=hfBus] at (11.25,0.8) {timers\\(libuv)};
+  \node[head] at (13.3,0.8) {printed};
+  \foreach \r in {1,...,6} \draw[black!12] (-0.1,{-\rh*\r+0.75}) -- (14.4,{-\rh*\r+0.75});
+  % 1
+  \node[when] at (0,0) {\textbf{1.} line 1: the timer is handed to libuv};
+  \node[fr] at (4.75,-0.23) {order.js};
+  \node[fr] at (4.75,0.24) {setTimeout};
+  \node[none] at (7.05,0) {empty};
+  \node[none] at (9.15,0) {empty};
+  \node[tq] at (11.25,0) {'timer'};
+  % 2
+  \node[when] at (0,{-1*\rh}) {\textbf{2.} line 2: the promise is already resolved};
+  \node[fr] at (4.75,{-1*\rh-0.23}) {order.js};
+  \node[fr] at (4.75,{-1*\rh+0.24}) {then};
+  \node[none] at (7.05,{-1*\rh}) {empty};
+  \node[mq] at (9.15,{-1*\rh}) {'promise'};
+  \node[tq] at (11.25,{-1*\rh}) {'timer'};
+  % 3
+  \node[when] at (0,{-2*\rh}) {\textbf{3.} line 3: a callback for Node's own queue};
+  \node[fr] at (4.75,{-2*\rh-0.23}) {order.js};
+  \node[fr] at (4.75,{-2*\rh+0.24}) {nextTick};
+  \node[nq] at (7.05,{-2*\rh}) {'tick'};
+  \node[mq] at (9.15,{-2*\rh}) {'promise'};
+  \node[tq] at (11.25,{-2*\rh}) {'timer'};
+  % 4
+  \node[when] at (0,{-3*\rh}) {\textbf{4.} line 4 prints};
+  \node[fr] at (4.75,{-3*\rh-0.23}) {order.js};
+  \node[fr] at (4.75,{-3*\rh+0.24}) {console.log};
+  \node[nq] at (7.05,{-3*\rh}) {'tick'};
+  \node[mq] at (9.15,{-3*\rh}) {'promise'};
+  \node[tq] at (11.25,{-3*\rh}) {'timer'};
+  \node[printed] at (12.55,{-3*\rh+0.2}) {script};
+  % 5
+  \node[when] at (0,{-4*\rh}) {\textbf{5.} the script ends; Node empties \texttt{nextTick} first};
+  \node[fr] at (4.75,{-4*\rh-0.23}) {'tick'};
+  \node[fr] at (4.75,{-4*\rh+0.24}) {console.log};
+  \node[none] at (7.05,{-4*\rh}) {empty};
+  \node[mq] at (9.15,{-4*\rh}) {'promise'};
+  \node[tq] at (11.25,{-4*\rh}) {'timer'};
+  \node[printed] at (12.55,{-4*\rh+0.2}) {script\\tick};
+  % 6
+  \node[when] at (0,{-5*\rh}) {\textbf{6.} then the microtasks};
+  \node[fr] at (4.75,{-5*\rh-0.23}) {'promise'};
+  \node[fr] at (4.75,{-5*\rh+0.24}) {console.log};
+  \node[none] at (7.05,{-5*\rh}) {empty};
+  \node[none] at (9.15,{-5*\rh}) {empty};
+  \node[tq] at (11.25,{-5*\rh}) {'timer'};
+  \node[printed] at (12.55,{-5*\rh+0.3}) {script\\tick\\promise};
+  % 7
+  \node[when] at (0,{-6*\rh}) {\textbf{7.} the loop reaches the timers phase};
+  \node[fr] at (4.75,{-6*\rh-0.23}) {'timer'};
+  \node[fr] at (4.75,{-6*\rh+0.24}) {console.log};
+  \node[none] at (7.05,{-6*\rh}) {empty};
+  \node[none] at (9.15,{-6*\rh}) {empty};
+  \node[none] at (11.25,{-6*\rh}) {empty};
+  \node[printed] at (12.55,{-6*\rh+0.4}) {script\\tick\\promise\\timer};
+\end{tikzpicture}
+\caption{The four lines, one moment at a time. The call stack grows upward: the
+box on top is the function running now. A word in quotes is the callback that
+prints it. When the stack empties, Node empties its own \texttt{nextTick} queue
+first and the microtask queue second; the timer callback waits in libuv until
+the loop comes around to the timers phase.}
+\label{fig:order-frames}
+\end{figure}
+
+Lines 1 to 4 are one task: running the script. Each line puts a function on the
+stack, and each one returns at once. \texttt{setTimeout} doesn't wait zero
+milliseconds; it hands its callback to libuv and returns. \texttt{then} doesn't
+run its callback either: the promise is already resolved, so the callback goes
+straight into the microtask queue. \texttt{process.nextTick} puts its callback
+in Node's own queue. Only \texttt{console.log} prints anything. When the script
+ends, the stack is empty, and Node empties the two small queues in a fixed
+order: \texttt{nextTick} first (row~5), then the microtasks (row~6). That's why
+\texttt{tick} comes before \texttt{promise}, although it was scheduled after
+it. The timer callback is a task, and it has to wait for the loop to start
+turning and reach the timers phase (row~7). The file is \texttt{order.js} on
+purpose: Section~\ref{sec:modules} shows why the same lines in a \texttt{.mjs}
+file print in another order.
+
+The phases show up the same way: inside the callback of a file read, which runs
+in poll, a \texttt{setImmediate} and a zero-millisecond \texttt{setTimeout} came
+out immediate first in five runs out of five, because check comes right after
+poll in the same turn and timers only in the next one. The cost in the concept
+box is just as easy to provoke: a function that keeps chaining
+\texttt{.then()} onto itself five million times kept the microtask queue from
+ever emptying, and a timer set for zero milliseconds fired after two seconds.
+Of the two small queues, \texttt{process.nextTick} is the older one, and Node's
+own documentation now recommends \texttt{queueMicrotask()} instead.
+
+With every queue in place, a real request can be followed through all of Node.
+This program asks a server for something by name, \texttt{localhost}, not by
+number, and prints the status code it gets back, \texttt{200}:
+
+\begin{code}
+async function get(url) {
+  const res = await fetch(url);
+  console.log(res.status);
+}
+get('http://localhost:8080/status');
+\end{code}
+
+Figure~\ref{fig:request-frames} follows it the same way as the four lines, with
+two new columns: one for \texttt{get} while it's paused, and one for the work
+that happens outside JavaScript.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    fr/.style={hf/base, draw=hfReader, fill=hfReader!10, font=\ttfamily\scriptsize,
+      minimum width=24mm, minimum height=4.4mm, inner sep=1pt},
+    me/.style={fr, line width=1.1pt, fill=hfReader!22},
+    nd/.style={fr, draw=hfBus, fill=hfBus!10, font=\sffamily\scriptsize},
+    pz/.style={fr, dashed, draw=black!45, fill=black!4, minimum width=20mm},
+    mq/.style={fr, dashed, fill=hfReader!4, minimum width=21mm},
+    when/.style={hf/note, anchor=west, align=left, text width=30mm},
+    outside/.style={hf/note, anchor=west, align=left, text width=33mm, text=hfSource},
+    head/.style={hf/note, font=\sffamily\footnotesize\bfseries, align=center},
+    none/.style={hf/note, text=black!35},
+    path/.style={-{Stealth[length=2mm]}, line width=0.9pt, draw=hfReader},
+  }
+  \def\rh{2.1}
+  \node[head] at (4.6,1.45) {call stack};
+  \node[head] at (7.05,1.45) {paused};
+  \node[head, text=hfReader] at (9.35,1.45) {microtask\\queue};
+  \node[head, text=hfSource] at (12.6,1.45) {outside JavaScript};
+  \draw[black!12] (-0.1,1.05) -- (14.4,1.05);
+  \foreach \r in {1,...,4} \draw[black!12] (-0.1,{-\rh*\r+1.05}) -- (14.4,{-\rh*\r+1.05});
+  % 1
+  \node[when] at (0,0) {\textbf{1.} \texttt{get} calls \texttt{fetch}, which starts the request and returns a promise that isn't resolved yet.};
+  \node[fr] at (4.6,-0.47) {get.mjs};
+  \node[me] (g1) at (4.6,0) {get};
+  \node[fr] at (4.6,0.47) {fetch};
+  \node[none] at (7.05,0) {---};
+  \node[none] at (9.35,0) {empty};
+  \node[outside] at (10.95,0) {nothing yet};
+  % 2
+  \node[when] at (0,{-1*\rh}) {\textbf{2.} \texttt{await} pauses \texttt{get}. The script ends, and no JavaScript runs at all.};
+  \node[none] at (4.6,{-1*\rh}) {empty};
+  \node[pz, draw=hfReader, text=hfReader] (g2) at (7.05,{-1*\rh}) {get};
+  \node[none] at (9.35,{-1*\rh}) {empty};
+  \node[outside] at (10.95,{-1*\rh}) {a pool thread asks the operating system for the address of \texttt{localhost}};
+  % 3
+  \node[when] at (0,{-2*\rh}) {\textbf{3.} The address arrives. The loop runs a piece of Node's code, a task, which opens the connection.};
+  \node[nd] at (4.6,{-2*\rh}) {Node: connect};
+  \node[pz, draw=hfReader, text=hfReader] (g3) at (7.05,{-2*\rh}) {get};
+  \node[none] at (9.35,{-2*\rh}) {empty};
+  \node[outside] at (10.95,{-2*\rh}) {the operating system sends the request and watches for the answer; no thread waits};
+  % 4
+  \node[when] at (0,{-3*\rh}) {\textbf{4.} The answer arrives. Another task reads it and resolves the promise.};
+  \node[nd] at (4.6,{-3*\rh}) {Node: read the answer};
+  \node[none] at (7.05,{-3*\rh}) {---};
+  \node[mq] (g4) at (9.35,{-3*\rh}) {rest of get};
+  \node[outside] at (10.95,{-3*\rh}) {done};
+  % 5
+  \node[when] at (0,{-4*\rh}) {\textbf{5.} The task ends. Node empties the microtask queue: \texttt{get} goes on after the \texttt{await} and prints \texttt{200}.};
+  \node[me] (g5) at (4.6,{-4*\rh-0.23}) {get};
+  \node[fr] at (4.6,{-4*\rh+0.24}) {console.log};
+  \node[none] at (7.05,{-4*\rh}) {---};
+  \node[none] at (9.35,{-4*\rh}) {empty};
+  \node[outside] at (10.95,{-4*\rh}) {done};
+  % the path of get
+  \draw[path] (g1.east) to[out=0, in=90] (g2.north);
+  \draw[path] (g2.south) -- (g3.north);
+  \draw[path] (g3.south) to[out=-90, in=90] (g4.north);
+  \draw[path] (g4.south) to[out=-90, in=0] (g5.east);
+\end{tikzpicture}
+\caption{The request from the code above, one row per moment. Follow
+\texttt{get}, in blue: on the stack in row~1, paused in rows 2 and 3 while the
+work happens outside JavaScript, sent to the microtask queue when the promise
+resolves (row~4), and back on the stack in row~5. The purple boxes are Node's
+own code, which the loop runs as tasks.}
+\label{fig:request-frames}
+\end{figure}
+
+Row~2 is the one that surprises people: the request is in flight and no
+JavaScript is running at all. \texttt{await} doesn't wait the way a blocking
+call does. It takes \texttt{get} off the stack, keeps its variables aside with
+the promise, and lets the script end. The waiting happens outside JavaScript,
+in two places. The name goes to a pool thread, because the system call that
+looks it up, \texttt{getaddrinfo}, can only block. The request goes to the
+operating system, which watches the connection for free. Each time one of them
+finishes, the loop wakes up and runs a piece of Node's own code as a task (rows
+3 and 4). The second task resolves the promise, and that is the only thing that
+brings \texttt{get} back.
+
+
+\section{Two module systems}
+\label{sec:modules}
+
+\begin{history}{2009--2019 \textperiodcentered{} CommonJS and ES modules}
+JavaScript was made in 1995 to add a few lines to a web page, and it had no way
+for one file to use another. In the browser, scripts were loaded in order with
+\texttt{<script>} tags and shared everything through global variables.
+
+That was impossible on a server. In January 2009, Kevin Dangoor, then at
+Mozilla, wrote a blog post called ``What Server Side JavaScript needs''. The
+first item was a module system. The group that formed around it, first called
+ServerJS and then \textbf{CommonJS}, specified \texttt{require()}: a function
+that loads a file, runs it, and returns what it exported. Node adopted it the
+same year.
+
+Meanwhile the language itself was getting its own. Since 1997, JavaScript has
+been defined by a standard, \textbf{ECMAScript}, kept by a committee of the
+Ecma International standards body, TC39. It needed a different name because
+``JavaScript'' was a trademark of Sun. Versions were numbered (ES3 in 1999, ES5
+in 2009) until the sixth, in June 2015. That one was renamed \textbf{ES2015},
+and since then a new version comes out every year, named after the year. It was
+the largest change in the language's history, and among many other things it
+added \texttt{import} and \texttt{export}, now called \textbf{ES modules}, or
+ESM. Browsers adopted them. Node needed four more
+years to make them work alongside a decade of \texttt{require}, and turned them
+on without a flag in version 13.2, in November 2019.
+\end{history}
+
+The two systems look like two spellings of the same thing, but they work
+differently. \texttt{require()} is an ordinary function call that loads a file synchronously,
+in the middle of running code. An \texttt{import} is a declaration the runtime
+reads before running anything, so it can find, fetch and link the whole graph
+of files first, even asynchronously.
+
+That difference is why \texttt{await} at the top of a file only works in ESM:
+
+\begin{code}
+// wait.cjs
+const { setTimeout } = require('node:timers/promises');
+await setTimeout(100);
+console.log('ready');
+\end{code}
+
+\begin{terminal}
+$ node wait.cjs
+SyntaxError: await is only valid in async functions and the top level bodies of modules
+$ node wait.mjs
+ready
+\end{terminal}
+
+The \texttt{.mjs} file has the same three lines, written with \texttt{import}.
+A CommonJS file can't wait, because whoever called \texttt{require()} expects
+the result back immediately. An ES module can, because the runtime is already
+loading the graph asynchronously (Figure~\ref{fig:cjs-esm}).
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.92mm, y=1mm, bar/.style={font=\sffamily\scriptsize, text=white}]
+  % --- CommonJS ---
+  \node[hf/note, anchor=west, font=\sffamily\footnotesize\bfseries] at (-18,64) {CommonJS: \texttt{require()} runs the other file in the middle of a line};
+  \node[hf/note, anchor=east] at (-2,54.5) {\texttt{main.js}};
+  \node[hf/note, anchor=east] at (-2,44.5) {\texttt{config.js}};
+  \fill[hfReader] (0,52) rectangle (30,57);
+  \node[bar] at (15,54.5) {runs};
+  \draw[black!35, dashed, line width=0.6pt] (30,54.5) -- (80,54.5);
+  \node[hf/note] at (55,58.5) {stuck on \texttt{cfg = require(...)}};
+  \draw[hf/ask] (30,52) -- (30,47);
+  \fill[hfSource!75] (30,42) rectangle (80,47);
+  \node[bar] at (55,44.5) {runs, top to bottom};
+  \draw[hf/flow, draw=hfSource] (80,47) -- node[hf/note, right] {returns \texttt{cfg}} (80,52);
+  \fill[hfReader] (80,52) rectangle (140,57);
+  \node[bar] at (110,54.5) {uses \texttt{cfg}};
+  \node[hf/note, text=hfAlert] at (55,37) {an \texttt{await} here would hand \texttt{main.js} a \texttt{cfg} that isn't ready};
+  % --- ES modules ---
+  \node[hf/note, anchor=west, font=\sffamily\footnotesize\bfseries] at (-18,26) {ES modules: every \texttt{import} is read first, then the files run in order};
+  \node[hf/note, anchor=east] at (-2,16.5) {runtime};
+  \node[hf/note, anchor=east] at (-2,8.5) {\texttt{config.js}};
+  \node[hf/note, anchor=east] at (-2,0.5) {\texttt{main.js}};
+  \fill[hfBus] (0,14) rectangle (30,19);
+  \node[bar] at (15,16.5) {reads imports};
+  \fill[hfSource!75] (30,6) rectangle (48,11);
+  \node[bar] at (39,8.5) {runs};
+  \draw[hfSource, dashed, line width=0.6pt] (48,6) rectangle (95,11);
+  \node[hf/note] at (71.5,8.5) {\texttt{await}, 100 ms};
+  \fill[hfSource!75] (95,6) rectangle (105,11);
+  \fill[hfReader] (105,-2) rectangle (140,3);
+  \node[bar] at (122.5,0.5) {runs, \texttt{cfg} ready};
+  \node[hf/note] at (52,-6.5) {\texttt{main.js} hasn't started, so nobody is waiting on a half-done file};
+\end{tikzpicture}
+\caption{Why only an ES module can wait at the top. Above, \texttt{require()}
+is a function call in the middle of \texttt{main.js}, which can't continue
+until it returns. Below, the runtime reads every \texttt{import} before running
+any code, so it can run \texttt{config.js} to the end, waits included, before
+\texttt{main.js} starts.}
+\label{fig:cjs-esm}
+\end{figure}
+
+Node decides which system a file uses by its extension (\texttt{.cjs} or
+\texttt{.mjs}) or, for \texttt{.js}, by the \texttt{"type"} field of the nearest
+\texttt{package.json}. Without that field, Node assumes CommonJS, for
+compatibility with 2009. ESM also asks for the file extension in every import,
+because it was designed for the browser, where an import is a URL and nobody
+guesses extensions on a URL.
+
+Loading asynchronously has one visible side effect. Saved as \texttt{order.mjs},
+the four lines of Figure~\ref{fig:order-frames} print \texttt{script},
+\texttt{promise}, \texttt{tick}, \texttt{timer}: the promise now comes before
+the \texttt{nextTick}. An ES module's code runs as one step of that
+asynchronous loading, inside a microtask. When the code ends, V8 is still
+emptying the microtask queue it was running in, and Node only gets to its
+\texttt{nextTick} queue afterwards. A CommonJS file runs as a plain task, so
+\texttt{nextTick} goes first. Code that depends on the order between the two
+small queues is a mistake in either kind of file.
+
+CommonJS is legacy. A new project should be ESM from the first file and set
+\texttt{"type": "module"}.
+
+\section{Types that disappear}
+
+\begin{history}{2012 \textperiodcentered{} Anders Hejlsberg}
+By 2010, teams at Microsoft and elsewhere were writing applications in
+JavaScript with hundreds of thousands of lines. The language gave them nothing
+to hold on to: no declared types, so no editor that could say what a function
+expected, and no way to rename something safely.
+
+There were two kinds of answer. Google's GWT (2006) and Dart (2011) asked
+programmers to write in another language and compile it to JavaScript. In
+October 2012, Microsoft announced \textbf{TypeScript}, led by Anders Hejlsberg,
+who had already designed Turbo Pascal, Delphi and C\#. TypeScript took the
+opposite route: every JavaScript program is already a TypeScript program, and
+the types you add are checked and then removed. The output is the JavaScript
+you would have written by hand.
+\end{history}
+
+\begin{concept}{Type erasure}
+TypeScript's types exist only while compiling. The compiler checks them and
+then deletes them, and the program that runs has no trace of them.
+
+\textbf{What it fixes:} adopting TypeScript costs nothing at runtime, and the
+output runs anywhere JavaScript runs.
+
+\textbf{What it costs:} nothing checks data that comes from outside the program
+while it runs. A request body, a file or an environment variable has whatever
+shape it has, regardless of what the types say.
+\end{concept}
+
+Compile \texttt{const port:\ number = 8080} and what comes out is
+\texttt{const port = 8080}. The types are gone. What they were worth happened
+before that, in the check.
+
+One common slip shows how much that check is worth. Express gives its response
+object a \texttt{send} method, and people who learned Express write
+\texttt{res.send('hello')} out of habit. Node's own response object has no
+\texttt{send}. It has \texttt{end}. Run without the compiler, the server starts,
+says it's listening, and dies on the first request with ``res.send is not a
+function'', which may happen hours later on another machine. With the compiler,
+the program never starts: the check stops on that line and asks ``Did you mean
+\texttt{end}?''.
+
+The compiler knows Node's response object because someone described it in
+TypeScript. Those descriptions come in a separate package, \texttt{@types/node},
+from \textbf{DefinitelyTyped}, a community repository Boris Yankov started in
+2012 for libraries that didn't ship their own types. They have to match the
+Node that runs the program. With the types of a newer Node, the compiler
+accepts functions the runtime doesn't have, and the check lies.
+
+\section{The edit--run loop}
+
+Compiling first and running second is safe and slow. Every change becomes
+stop, compile, start, try. People don't work like that for long, and the tools
+that fix it have their own lineage.
+
+\begin{history}{2010--2025 \textperiodcentered{} Restarting on save}
+In 2010, Remy Sharp wrote \textbf{nodemon}, which restarts a Node process
+whenever a file changes. In 2015, Blake Embrey wrote \textbf{ts-node}, which
+compiles TypeScript in memory so it can run without a build step. It
+type-checked on every start, which made it slow. In 2020, Evan Wallace, a
+co-founder of Figma, released \textbf{esbuild}, a JavaScript and TypeScript
+compiler written in Go that is fast because it removes types without checking
+them. In 2022, Hiroki Osame released \textbf{tsx}, which puts esbuild and
+restart-on-save together.
+
+Node then absorbed the idea. Version 22.6, in mid-2024, could strip types
+behind a flag. Version 23.6, in January 2025, did it by default, and so did
+22.18 that July. It only handles syntax that can be erased: TypeScript features
+that generate code, like \texttt{enum}, don't pass.
+\end{history}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[hf/source, minimum width=22mm] (src) {\texttt{.ts} file};
+  \node[hf/bus, right=18mm of src, yshift=10mm, minimum width=32mm] (tsc) {\texttt{tsc}\\{\footnotesize checks, then writes}};
+  \node[hf/source, right=10mm of tsc, minimum width=18mm] (js) {\texttt{.js}};
+  \node[hf/reader, right=10mm of js, minimum width=18mm] (n1) {node};
+  \node[hf/bus, right=18mm of src, yshift=-10mm, minimum width=32mm] (strip) {tsx, node\\{\footnotesize erases and runs}};
+  \node[hf/reader, right=38mm of strip, minimum width=18mm] (n2) {running};
+  \draw[hf/flow, black!60] (src.east) -- (tsc.west);
+  \draw[hf/flow, black!60] (tsc) -- (js);
+  \draw[hf/flow, black!60] (js) -- (n1);
+  \draw[hf/flow, black!60] (src.east) -- (strip.west);
+  \draw[hf/flow, black!60] (strip) -- node[hf/note, text=hfAlert, above] {no type check} (n2);
+\end{tikzpicture}
+\caption{Two ways from TypeScript to a running program. The fast one is fast
+because it skips the check.}
+\end{figure}
+
+The fast loop gives the misspelled method its old behavior back: the process
+restarts, the server comes up, and the error waits for a request. The build
+would still catch it, but nobody runs a build every time they save. So the
+check has to run somewhere else, as its own command, \texttt{tsc} with
+\texttt{--noEmit}, every time the code is about to be shared. A check that
+only runs when somebody remembers to run it doesn't count as a check.
+
+\section{What is actually installed}
+
+\begin{history}{2010--2017 \textperiodcentered{} npm and the lock file}
+Isaac Schlueter released npm in 2010, and it became Node's package manager.
+Packages declared their dependencies as version ranges, following Semantic
+Versioning, which Tom Preston-Werner, a co-founder of GitHub, had written down
+around the same time: the first number changes when something breaks, the
+second when something is added, the third for fixes. A range like
+\texttt{\textasciicircum 2.1.0} means ``2.1.0 or anything newer before 3''.
+
+Ranges meant that two installs of the same project on different days could get
+different code, because a dependency of a dependency had published a new
+version in between. In October 2016, Facebook, with Google and others, released
+\textbf{Yarn}, whose main promise was a lock file: the exact version of every
+package in the tree, written down, so every machine installs the same thing.
+npm adopted the idea in version 5, in 2017, with \texttt{package-lock.json}.
+\end{history}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[hf/source, minimum width=36mm, minimum height=16mm] (pkg) {\texttt{package.json}\\{\footnotesize \texttt{some-lib \textasciicircum 2.1.0}}\\{\footnotesize what you accept}};
+  \node[hf/bus, right=22mm of pkg, minimum width=36mm, minimum height=16mm] (lock) {\texttt{package-lock.json}\\{\footnotesize \texttt{some-lib 2.4.3} + hash}\\{\footnotesize what was chosen}};
+  \node[hf/store, right=22mm of lock, minimum width=30mm, minimum height=16mm] (nm) {\texttt{node\_modules}\\{\footnotesize what is on disk}};
+  \draw[hf/flow, black!60] (pkg) -- node[hf/note, above] {npm install} (lock);
+  \draw[hf/save] (lock) -- node[hf/note, above] {npm ci} (nm);
+  \draw[hf/pain, dashed, -{Stealth[length=2mm]}] ([yshift=-10mm]pkg.south) -- ([yshift=-10mm]nm.south)
+    node[pos=0.5, hf/note, text=hfAlert, below=1.5mm] {editing \texttt{package.json} by hand changes neither of the other two};
+\end{tikzpicture}
+\caption{Three different things. Only \texttt{npm install} brings them into
+agreement.}
+\end{figure}
+
+\begin{concept}{Lock file}
+A file, generated by the package manager and committed with the code, that
+records the exact version and content hash of every package the project
+installed, including the dependencies of dependencies.
+
+\textbf{What it fixes:} the code that ran on your machine is the code that runs
+on the server, and a new release of a package you've never heard of can't
+change your program overnight.
+
+\textbf{What it costs:} updates stop happening by themselves. Somebody has to
+decide to update, and review a lock diff that can be hundreds of lines for a
+single new dependency.
+\end{concept}
+
+Those hundreds of lines are often honest. A tool written in Go, like esbuild,
+is published as one package per operating system and processor, all listed as
+optional dependencies; the lock records every one of them, and npm downloads
+only the one for your machine.
+
+The \texttt{package.json} also separates what the program needs to run
+(\texttt{dependencies}) from what it only needs to be built and checked
+(\texttt{devDependencies}). The compiler, the type descriptions and the test
+runner are the second kind. The image that runs in production installs only the
+first kind, which makes it smaller and leaves less code there to attack.
+
+Commit the lock file, and install from it with \texttt{npm ci} everywhere except
+your own machine. A project without a lock file installs a slightly different
+program every week.
+
+\section{A framework}
+
+\begin{history}{2007--2024 \textperiodcentered{} Sinatra, Express, Fastify}
+In 2007, Blake Mizerany released Sinatra for Ruby: a web application as a list
+of routes, each one a method, a path and a block of code. In 2010, TJ
+Holowaychuk brought that style to Node with \textbf{Express}, built on a chain
+of \emph{middleware}: functions that each receive the request, do something,
+and pass it on. Express became what Node servers were written in. Its version 4
+came out in 2014, and version 5 only in 2024. Until 5, an error thrown inside an
+\texttt{async} handler wasn't caught, and the request simply hung.
+
+In 2016, Matteo Collina and Tomas Della Vedova started \textbf{Fastify}, which
+reached 1.0 in March 2018. It came from measuring what Express spent per
+request: the middleware chain, and a generic \texttt{JSON.stringify} for every
+response. Fastify asks each route to declare a schema for what it receives and
+returns, and compiles that schema into a function that validates or serializes
+exactly that shape.
+\end{history}
+
+Go back to the first server in this chapter, the one written on the bare
+\texttt{http} module. It had one function that received every request and
+checked, with an \texttt{if}, whether the method was \texttt{GET} and the
+address was exactly \texttt{/status}. Everything else got a 404. With a
+framework, the program turns around: you write one function per route, and the
+framework decides which one to call. Here is the same \texttt{/status} route in
+Fastify, plus a second route that receives a number:
+
+\begin{code}
+app.get('/status', async () => ({ ok: true }));
+
+app.post('/speed', {
+  schema: {
+    body: {
+      type: 'object',
+      required: ['factor'],
+      properties: { factor: { type: 'number', minimum: 0.1, maximum: 10 } },
+    },
+  },
+}, async (req) => ({ accepted: req.body }));
+\end{code}
+
+Compare it with the bare version. The \texttt{if} is gone: neither function looks
+at the method or the address, because \texttt{app.get} and \texttt{app.post}
+already said which requests each one is for. And the \texttt{/speed} route
+declares what its body must be, an object with a field \texttt{factor} that is
+a number between 0.1 and 10, while the function itself never checks it.
+
+To try the routes, I didn't start the server. Fastify has a method,
+\texttt{inject}, that builds a request in memory and runs it through the
+application as if it had arrived over the network: the same routing, the same
+schema check, the same function. Nothing listens on a port and nothing crosses
+the network. It isn't a test by itself, but it's what tests are built on: a test
+can check a route without starting a server, finding a free port and waiting
+for it to come up. These are four requests sent that way, and what the bare
+server did with the same ones:
+
+\begin{itemize}
+  \item \texttt{GET /status?x=1} got \textbf{200} and \texttt{\{"ok":true\}}.
+        The bare server answered 404, because it compared the whole address,
+        query string included, as text. Fastify separates the path from the
+        query before choosing the route.
+  \item \texttt{POST /speed} with \texttt{factor} 2 got \textbf{200}, and the
+        function received the body already parsed. The bare server would have
+        needed code to collect the body from the stream and parse it.
+  \item \texttt{POST /speed} with \texttt{factor} 50 got \textbf{400} and the
+        message ``body/factor must be <= 10''. The function never ran: the
+        schema turned the request away and said why. In the bare version, that
+        check would be more \texttt{if}s inside the function.
+  \item \texttt{POST /status} got \textbf{404}, ``Route POST:/status not
+        found''. The bare server also answered 404.
+\end{itemize}
+
+The last one is wrong in both. The path exists, only not for that method, and HTTP has
+had a status for that since 1997: \emph{405 Method Not Allowed}, which comes
+with a header listing the methods the path does accept. Neither Express nor
+Fastify sends it by default. It's a small mistake, and both make it.
+
+For a new TypeScript server, Express is the wrong default today. Its types live
+in DefinitelyTyped, maintained apart from the code, and it took until 2024 to
+handle errors in \texttt{async} handlers. Fastify ships its own types, validates
+input from the route's schema, and can be tested without a network.
+
+\section{Settings from outside}
+
+The same program has to run on a laptop, in a test, and in a cluster, with a
+different port, address and log level in each. The settings can't be in the
+code.
+
+\begin{history}{2004--2019 \textperiodcentered{} Failing early}
+In 2004, Jim Shore wrote ``Fail Fast'' for \emph{IEEE Software}: a program that
+detects a problem should stop immediately and say so, instead of carrying on
+with a bad value and failing later, far from the cause. In 2011, Adam Wiggins,
+a co-founder of Heroku, published \textbf{The Twelve-Factor App}, a list of
+rules for programs that run on platforms like his. Rule three: configuration
+lives in environment variables, so the same build runs everywhere and no
+password ends up in the repository. In 2019, Alexis King wrote ``Parse, don't
+validate'', which gave a name to the right way of checking input: turn it, once,
+at the edge, into a type that can't hold an invalid value.
+\end{history}
+
+Environment variables come with a problem the types don't see. Every one of
+them is a string or missing, and JavaScript is happy to add a number to a string:
+
+\begin{terminal}
+$ TIMEOUT_MS=5000 node -e "console.log(process.env.TIMEOUT_MS + 1)"
+50001
+\end{terminal}
+
+The fix, after type erasure, has to happen while the program runs. Libraries
+for it go back a while. Joi, from the hapi framework, around 2012, checked
+values at runtime but knew nothing about TypeScript. io-ts, by Giulio Canti in
+2017, derived the type from the check, in a heavily functional style. Colin
+McDonnell's \textbf{zod}, in 2020, did the same with an API that reads like
+ordinary code, and became the common choice.
+
+\begin{code}
+import { z } from 'zod';
+
+const Env = z.object({
+  TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
+  MODE: z.enum(['live', 'replay']).default('live'),
+});
+
+const result = Env.safeParse(process.env);
+if (!result.success) {
+  console.error(z.prettifyError(result.error));
+  process.exit(1);
+}
+const env = result.data; // { TIMEOUT_MS: number; MODE: 'live' | 'replay' }
+console.log(env.TIMEOUT_MS + 1, env.MODE);
+\end{code}
+
+Without the variable, the program prints \texttt{5001 live}. With
+\texttt{TIMEOUT\_MS=5s}, it doesn't start:
+
+\begin{terminal}
+$ TIMEOUT_MS=5s node env.ts
+(*$\times$*) Invalid input: expected number, received NaN
+  (*$\rightarrow$*) at TIMEOUT_MS
+\end{terminal}
+
+\begin{concept}{Parse at the edge}
+Check everything that comes from outside the program once, where it enters,
+and turn it into a typed value. From then on, the code uses the typed value and
+never looks at the raw input again.
+
+\textbf{What it fixes:} a bad setting stops the program at startup, with a
+message naming it, instead of breaking the first operation that uses it, an
+hour later.
+
+\textbf{What it costs:} every input needs a schema, written and kept in step
+with the code that uses it.
+\end{concept}
+
+An empty \texttt{TIMEOUT\_MS=} is refused too, and that one surprises people.
+It doesn't fall back to the default, because the variable is defined, just
+empty, and an empty string becomes the number zero, which isn't positive.
+Failing there is correct. An empty variable in a deployment is almost always a
+mistake in the deployment.
+
+\section{What the compiler doesn't check}
+
+\begin{history}{1978 \textperiodcentered{} Stephen C.\ Johnson}
+At Bell Labs, Stephen C.\ Johnson wrote \textbf{lint}, a program that read C
+code and complained about things the compiler accepted but that were probably
+wrong: variables used before being set, functions called with the wrong
+arguments, code that would only work on one machine. He kept it separate from
+the compiler on purpose. The compiler's job was to translate quickly; lint's
+was to be suspicious. In his 1978 paper he wrote that ``the general notion of
+having two programs is a good one''.
+
+JavaScript got its first lint in 2002, Douglas Crockford's JSLint, which
+enforced Crockford's own opinions with no way to turn them off. Anton
+Kovalyov forked it in 2011 as JSHint, which was configurable. In 2013, Nicholas
+Zakas released \textbf{ESLint}, in which every rule is a plugin. That design
+is why TypeScript got its own lint: in 2019, the separate TSLint project was
+retired, and typescript-eslint, a set of ESLint plugins that can ask the
+TypeScript compiler about types, took its place.
+\end{history}
+
+Some mistakes are well-typed. Calling an \texttt{async} function without
+waiting for it is valid code, with a valid type:
+
+\begin{code}
+async function save(value: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  if (value < 0) throw new Error('negative');
+  console.log('saved', value);
+}
+
+save(42);
+console.log('done');
+\end{code}
+
+It prints \texttt{done} and then \texttt{saved 42}: the program announces
+it's finished before the save happens, and if the save fails, nobody is waiting
+to hear it. The compiler accepts this file without a word, because every type
+in it is correct. The mistake is in how the value is used. A lint rule that can
+see types catches it: typescript-eslint's \texttt{no-floating-promises} flags
+the line \texttt{save(42)} and asks for an \texttt{await}, a \texttt{.catch}, or
+an explicit \texttt{void} to say the result is being ignored on purpose.
+
+To see types, the linter calls the compiler's own JavaScript API. That
+dependency surfaced in 2025. In March, Hejlsberg announced that TypeScript was
+being ported to Go, for compile times around ten times shorter. TypeScript 6.0,
+in March 2026, was the last version written in JavaScript, and 7.0, the Go
+port, came out that July without a compatible version of the API that
+typescript-eslint uses.
+
+\begin{question}{The TypeScript compiler is written in Go? Do I need Go now?}
+No. A compiler is a program like any other. It reads text and writes text, and
+nothing requires it to be written in the language it reads. The first ones
+couldn't be: IBM's FORTRAN compiler, in 1957, was written in assembly, because
+there was no FORTRAN yet to write it in.
+
+Go is needed to build the compiler, not to run it, and what Microsoft publishes
+is the result: an executable in the processor's own instructions. npm delivers
+it the same way it delivers esbuild, as described earlier in this chapter. On a
+Windows machine, installing \texttt{typescript} 7.0.2 brings a package that
+lists more than a dozen optional packages, one per operating system and
+processor, and npm downloads only \texttt{@typescript/typescript-win32-x64}.
+Inside it is \texttt{tsc.exe}, a 24~MB Windows executable. The \texttt{tsc}
+command a project runs is still a JavaScript file, two lines long, whose only
+job is to start it.
+\end{question}
+
+Writing a compiler in the language it compiles came later, and it was a
+milestone.
+
+\begin{history}{1962 \textperiodcentered{} A compiler that compiles itself}
+At MIT in 1962, Tim Hart and Mike Levin wrote a compiler for Lisp in Lisp. To
+get the first copy running, they ran its source in the Lisp interpreter that
+already existed and had it compile itself. From then on, the compiled compiler
+compiled its own new versions. A compiler written in the language it compiles
+is called \textbf{self-hosting}, and using an older tool to produce the first
+copy is called \textbf{bootstrapping}. Dennis Ritchie's C compiler at Bell Labs
+was written in C from its early versions in the 1970s. Being self-hosting
+became a sign that a language was serious: if it was good enough for its own
+compiler, it was good enough for most things.
+\end{history}
+
+TypeScript was self-hosting from 2012 until 2026: written in TypeScript,
+compiled to JavaScript by an earlier version of itself, and run by Node. That
+had a cost. Node runs code on one thread, under an event loop designed for
+programs that mostly wait on the network, and a type checker doesn't wait. It
+computes, for a long time, and on a large project it was slow. Hejlsberg's team
+chose Go over Rust because they wanted to port the existing code line by line,
+not redesign it, and Go, with its garbage collector, let them keep the same
+structure. Go compiles to machine code and uses every processor core at once.
+
+That is also why the linter broke. While the compiler was JavaScript, it ran in
+the same process as the linter, which could call its functions and read its
+objects directly, the way any library is used. A Go executable is another
+program, in another process. The only way to use it is to send it messages and
+read its answers, and that interface wasn't ready when 7.0 came out. A project
+that lints with types stays on 6.0 until it is. A compiler is also a library
+that other tools are built on, and making it faster broke them.
+
+\section{Format, line endings, tests}
+
+\begin{history}{2009--2017 \textperiodcentered{} The end of style arguments}
+When Go was released in 2009, it came with \texttt{gofmt}, which rewrites any
+Go file into the one official layout, and Go programmers stopped arguing about
+where braces go. In January 2017, James Long released \textbf{Prettier}, which
+did the same for JavaScript: it parses the code, throws away the original
+layout, and prints the syntax tree again following an algorithm Philip Wadler
+had published as ``A prettier printer''.
+\end{history}
+
+Arguing about formatting is useless. A team should pick a formatter, accept
+its output, and spend the time on something else. Formatters and linters used
+to fight over the same rules, so the usual setup turns off every formatting
+rule in the linter and leaves layout to the formatter.
+
+\begin{history}{1963--1981 \textperiodcentered{} Two motions of a teleprinter}
+On a Teletype, ending a line took two mechanical motions: the
+\emph{carriage return} (CR) sent the print head back to the left, and the
+\emph{line feed} (LF) rolled the paper up one line. ASCII, in 1963, gave each
+one a code, and a line ended with both. Multics and then Unix decided that a
+line inside a file ends with LF alone, and the terminal driver adds the CR when
+printing. CP/M, in the 1970s, kept both, and MS-DOS, in 1981, inherited them
+from CP/M. Windows still ends lines with CR LF.
+\end{history}
+
+The consequence shows up in a repository edited on Windows and run on Linux.
+Git for Windows, by default, converts line endings to CR LF when it checks
+files out. A formatter that writes LF then reports every file as wrong. The fix
+is a \texttt{.gitattributes} file that tells Git the repository's files use LF
+on every machine, which is also what the Linux container will read.
+
+Finally, tests. Facebook released Jest in 2014, and for years it was what
+JavaScript projects tested with, but it needed extra compilers for TypeScript
+and its support for ES modules stayed experimental. Vitest, from Anthony Fu
+and the Vite team in December 2021, runs TypeScript and ES modules directly. A
+test of an HTTP route doesn't need a network: if the code that \emph{builds}
+the application is separate from the code that \emph{starts} it, the test
+builds the application and sends it requests with \texttt{inject}, and no port
+is ever opened.
+
+\section{What it costs}
+
+After all of this, the server answers one route, the same one the bare
+\texttt{http} module answered with a dozen lines. In exchange, a misspelled
+method fails the type check, a bad setting stops the startup, a forgotten
+\texttt{await} fails the lint and a broken route fails a test, all before
+anyone opens a browser.
+
+The price is a dozen tools, each with its own configuration file and its own
+release schedule, and the versions have to agree: the type descriptions with
+the runtime, the linter with the compiler, the formatter with the line endings.
+When one of them moves, as the compiler did in 2026, something downstream
+breaks. Most of the work of keeping a Node project healthy is keeping those
+versions in agreement.
+
+\section*{Further reading}
+
+\begin{itemize}
+  \item D.\ Kegel, ``The C10K problem'', 1999,
+        \url{http://www.kegel.com/c10k.html}.
+  \item R.\ Dahl, ``Node.js'', JSConf EU, Berlin, 2009.
+  \item K.\ Dangoor, ``What Server Side JavaScript needs'', 2009,
+        \url{https://blueskyonmars.com/2009/01/29/what-server-side-javascript-needs}.
+  \item S.~C.\ Johnson, ``Lint, a C Program Checker'', Bell Laboratories, 1978.
+  \item J.\ Shore, ``Fail Fast'', \emph{IEEE Software} 21(5), 2004.
+  \item A.\ Wiggins, \emph{The Twelve-Factor App}, 2011,
+        \url{https://12factor.net}.
+  \item A.\ King, ``Parse, don't validate'', 2019,
+        \url{https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/}.
+  \item P.\ Wadler, ``A prettier printer'', in \emph{The Fun of Programming},
+        Palgrave, 2003.
+  \item S.\ McKenzie, C.\ Pojer and J.\ Kyle, ``Yarn: A new package manager for
+        JavaScript'', Facebook Engineering, 2016,
+        \url{https://engineering.fb.com/2016/10/11/web/yarn-a-new-package-manager-for-javascript/}.
+\end{itemize}

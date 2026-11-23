@@ -1,0 +1,1097 @@
+\chapter{Drawing the Screen}
+
+The last two chapters were about the server: a process that holds a session
+with the plant and pushes values to whoever is connected. This one is about
+what's connected: a page in a browser that receives those values and draws the
+plant on the screen.
+
+The browser is a strange place to run a program. The code isn't installed. It
+travels over the network every time someone opens the page, so its size is paid
+for by every visitor. It runs on a machine you don't control, so anything it
+contains can be read by anyone who opens the page. And it can only talk to the
+network under rules the browser enforces, whatever the server thinks. Most of
+what makes front-end work different from server work comes from those three
+facts, and from one older problem: keeping what's on the screen in agreement
+with what the program knows.
+
+\section{A page you change by hand}
+\label{sec:by-hand}
+
+\begin{history}{1995--2006 \textperiodcentered{} From a few lines to jQuery}
+In May 1995, Brendan Eich wrote the first version of JavaScript in ten days at
+Netscape, and it shipped in Navigator 2.0, in betas from the end of that year. It was made for small
+things: checking a form before sending it, swapping an image when the mouse
+passed over it. To do them, a script reached into the page and changed it.
+
+The page, as scripts see it, is the \textbf{DOM}, the Document Object Model: a
+tree of objects, one per element, that the browser keeps in memory and redraws
+whenever it changes. The W3C standardized it in 1998, but Netscape and Internet
+Explorer each kept their own version for years, and a script that worked in one
+often failed in the other. In January 2006, John Resig presented
+\textbf{jQuery} at BarCamp NYC. It hid the differences between browsers behind
+one short syntax: find these elements, change them. For the next ten years,
+most of the web was written that way.
+\end{history}
+
+Here is a page written that way: a count of unread messages, a button to mark
+them all as read, and a list of conversations with the unread ones in bold.
+
+\begin{code}[language={},morestring={[b]"}]
+<span id="badge">2</span>
+<button id="read-all">mark all as read</button>
+<ul id="threads">
+  <li class="unread">Ana</li>
+  <li class="unread">Bruno</li>
+</ul>
+\end{code}
+
+And its script, in jQuery. \texttt{\$('\#badge')} finds the element whose
+\texttt{id} is \texttt{badge}, \texttt{.text(...)} changes what it shows, and
+\texttt{.on('click', ...)} registers a callback for clicks, the same kind of
+callback as in Chapter~3:
+
+\begin{code}
+let unread = 2;
+
+$('#threads li').on('click', function () {
+  if (!$(this).hasClass('unread')) return;
+  $(this).removeClass('unread');
+  unread -= 1;
+  $('#badge').text(unread);
+});
+
+$('#read-all').on('click', function () {
+  $('#threads li').removeClass('unread');
+  unread = 0;
+});
+\end{code}
+
+The number of unread messages now lives in two places: in the variable
+\texttt{unread}, which is what the program believes, and in the text of the
+badge, which is what the user sees. Nothing ties them together. Each handler
+has to remember every place that shows the number and change each one itself.
+Figure~\ref{fig:dom-hands} shows what each handler touches.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    el/.style={hf/reader, font=\ttfamily\scriptsize, minimum height=6mm, inner sep=2pt},
+    hd/.style={hf/bus, font=\sffamily\footnotesize, minimum width=30mm},
+    touch/.style={hf/flow, black!55},
+  }
+  % the DOM
+  \node[hf/note, font=\sffamily\footnotesize\bfseries, text=hfReader] at (0.4,1.3) {the page (the DOM)};
+  \node[el] (doc) at (0.4,0.4) {page};
+  \node[el] (badge) at (-2.4,-1.0) {span\#badge\\{\sffamily ``2''}};
+  \node[el] (btn) at (0.0,-1.0) {button\#read-all};
+  \node[el] (ul) at (2.6,-1.0) {ul\#threads};
+  \node[el] (ana) at (1.6,-2.4) {li.unread\\{\sffamily Ana}};
+  \node[el] (bruno) at (3.6,-2.4) {li.unread\\{\sffamily Bruno}};
+  \draw[black!30] (doc) -- (badge); \draw[black!30] (doc) -- (btn);
+  \draw[black!30] (doc) -- (ul);
+  \draw[black!30] (ul) -- (ana); \draw[black!30] (ul) -- (bruno);
+  % the program
+  \node[hf/note, font=\sffamily\footnotesize\bfseries, text=hfStore] at (7.2,1.3) {the program};
+  \node[hf/store, font=\ttfamily\scriptsize, minimum width=22mm] (var) at (7.2,-1.0) {let unread = 2};
+  % the handlers
+  \node[hd] (h1) at (-0.4,-4.4) {click on a name};
+  \node[hd] (h2) at (4.4,-4.4) {mark all as read};
+  \draw[touch] (h1) -- (badge);
+  \draw[touch] (h1) -- (ana);
+  \draw[touch] (h1.east) to[out=10, in=-120] (var.south west);
+  \draw[touch] (h2) -- (ana);
+  \draw[touch] (h2) -- (bruno);
+  \draw[touch] (h2) -- (var);
+  \draw[hf/pain, dashed] (h2.south) -- ++(0,-0.5) -| (-3.4,-1.0) -- (badge.west);
+  \node[text=hfAlert, font=\sffamily\bfseries] at (-3.4,-3.0) {$\times$};
+  \node[hf/note, text=hfAlert, anchor=north] at (0.6,-5.3) {nobody changes the badge here};
+\end{tikzpicture}
+\caption{What each handler of the script touches. The page is a tree of
+objects, and each handler reaches into it by hand. ``Click on a name'' changes
+the name, the variable and the badge. ``Mark all as read'' changes the names and
+the variable, and forgets the badge.}
+\label{fig:dom-hands}
+\end{figure}
+
+Click Ana, then the button, and the page ends up disagreeing with the program
+(Figure~\ref{fig:dom-moments}).
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    when/.style={hf/note, anchor=west, align=left, text width=36mm},
+    head/.style={hf/note, font=\sffamily\footnotesize\bfseries, align=center},
+    val/.style={font=\ttfamily\small},
+  }
+  \node[head, text=hfStore] at (5.6,0.9) {in the program\\\texttt{unread}};
+  \node[head, text=hfReader] at (8.4,0.9) {on the page\\the badge};
+  \node[head, text=hfReader] at (11.4,0.9) {on the page\\names in bold};
+  \draw[black!12] (-0.1,0.35) -- (13.2,0.35);
+  \foreach \r in {1,2} \draw[black!12] (-0.1,{-1.0*\r+0.45}) -- (13.2,{-1.0*\r+0.45});
+  \node[when] at (0,0) {\textbf{1.} the page loads};
+  \node[val] at (5.6,0) {2}; \node[val] at (8.4,0) {2};
+  \node[val, font=\sffamily\small] at (11.4,0) {\textbf{Ana}, \textbf{Bruno}};
+  \node[when] at (0,-1) {\textbf{2.} click on Ana};
+  \node[val] at (5.6,-1) {1}; \node[val] at (8.4,-1) {1};
+  \node[val, font=\sffamily\small] at (11.4,-1) {Ana, \textbf{Bruno}};
+  \node[when] at (0,-2) {\textbf{3.} click on ``mark all as read''};
+  \node[val] at (5.6,-2) {0};
+  \node[val, text=hfAlert, font=\ttfamily\small\bfseries] at (8.4,-2) {1};
+  \node[val, font=\sffamily\small] at (11.4,-2) {Ana, Bruno};
+  \node[hf/note, text=hfAlert] at (8.4,-2.55) {the program says 0};
+\end{tikzpicture}
+\caption{The page from Figure~\ref{fig:dom-hands}, one click at a time. After
+the third row, the badge says there is one unread message, and the program,
+the list and the user all know there are none.}
+\label{fig:dom-moments}
+\end{figure}
+
+That's the whole bug: one missing line, \texttt{\$('\#badge').text(0)}, in the
+second handler. Here it's easy to see, with two handlers and two places to
+update. A real page has dozens of handlers and the same number shown in
+several places, and every new feature adds a handler that has to know all of
+them. Sooner or later someone forgets one, and the screen starts showing
+something the program no longer believes. jQuery made changing the page easy,
+but it didn't change who had to remember: the programmer, by hand, in every
+handler.
+
+\begin{history}{2014 \textperiodcentered{} The message that wasn't there}
+At F8, Facebook's yearly conference for developers, in April 2014, Facebook
+engineers Tom Occhino and Jing Chen explained
+why they had stopped building their pages that way. Their example was a bug
+that kept coming back: the messages icon showed a count of unread messages, the
+user clicked it, and there were no unread messages. The count, the list of
+conversations and the open chat windows each kept their own idea of what had
+been read, and each event had to update all of them. Engineers fixed the bug,
+it stayed fixed for a while, and it returned with the next feature that touched
+any of those places.
+\end{history}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  % by hand
+  \node[hf/note, font=\sffamily\footnotesize\bfseries] at (0,1.2) {by hand};
+  \node[hf/source, minimum width=30mm] (ev1) at (0,0) {a message is read};
+  \node[hf/reader, minimum width=20mm] (badge) at (-2.3,-2.2) {unread count};
+  \node[hf/reader, minimum width=20mm] (list) at (0,-2.2) {thread list};
+  \node[hf/reader, minimum width=20mm] (chat) at (2.3,-2.2) {chat window};
+  \draw[hf/ask] (ev1) -- (list);
+  \draw[hf/ask] (ev1) -- (chat);
+  \draw[hf/pain, dashed] (ev1) -- (badge) node[pos=0.55, text=hfAlert, font=\sffamily\bfseries] {$\times$};
+  \node[hf/note, text=hfAlert] at (-2.3,-3.2) {forgotten: shows 1};
+  % from state
+  \begin{scope}[xshift=7.6cm]
+  \node[hf/note, font=\sffamily\footnotesize\bfseries] at (0,1.2) {from the state};
+  \node[hf/source, minimum width=30mm] (ev2) at (0,0) {a message is read};
+  \node[hf/store, minimum width=22mm] (st) at (0,-1.5) {state};
+  \node[hf/reader, minimum width=56mm] (scr) at (0,-3.0) {count, list and window, drawn again};
+  \draw[hf/save] (ev2) -- node[hf/note, right] {change it once} (st);
+  \draw[hf/flow, draw=hfStore] (st) -- node[hf/note, right] {draw from it} (scr);
+  \end{scope}
+\end{tikzpicture}
+\caption{Left: each event updates every place that shows the data, and a
+forgotten place keeps showing an old value. Right: the event changes the state
+once, and everything on the screen is drawn from the state again.}
+\end{figure}
+
+\section{The screen as a function of the state}
+\label{sec:click-models}
+
+The fix came from an older way of building pages, one in which a count of
+unread messages that nobody updated couldn't happen, because nothing on the
+page lived long enough to go stale.
+
+\begin{history}{1993--2005 \textperiodcentered{} Pages built on the server}
+The first web servers only sent files. In 1993, the NCSA web server added CGI,
+the Common Gateway Interface: for some addresses, instead of sending a file, the
+server ran a program and sent back whatever the program printed. A page could
+now be built from data at the moment someone asked for it. On June 8, 1995,
+Rasmus Lerdorf announced the Personal Home Page Tools, a few such programs he
+had written to count the visits to his online résumé. They grew into
+\textbf{PHP}, a language written inside the HTML: the page is mostly HTML, and
+wherever a value should appear, a short piece of code fetches it and prints it.
+PHP became the most common way to build a page on the server, and in 2004 Mark
+Zuckerberg wrote Facebook in it.
+
+In that model the page is built from scratch on every request and thrown away
+once it's sent. When a message is read, the next request builds a new page, and
+the count, the list and everything else come from the same data at the same
+moment. They can't disagree. The price is that every change, however small,
+means asking the server for a whole new page and drawing it again. Ajax, from
+Chapter~4, ended that around 2005: the page stayed open and changed itself in
+place, which was much faster for the user and brought in the forgotten badge
+of the previous section.
+\end{history}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    st/.style={hf/base, font=\sffamily\scriptsize, minimum height=7mm, inner sep=2pt},
+    ev/.style={st, draw=hfSource, fill=hfSource!10},
+    sv/.style={st, draw=hfBus, fill=hfBus!10},
+    pg/.style={st, draw=hfReader, fill=hfReader!10},
+    sa/.style={st, draw=hfStore, fill=hfStore!10},
+    yr/.style={hf/note, font=\sffamily\footnotesize\bfseries, anchor=west, align=left, text width=24mm},
+    good/.style={hf/note, anchor=west, align=left, text=hfStore},
+    bad/.style={hf/note, anchor=west, align=left, text=hfAlert},
+    fl/.style={hf/flow, black!55},
+  }
+  % 1995
+  \node[yr] at (-0.2,0) {1995\\[-1pt]{\mdseries server builds the page}};
+  \node[ev] (c1) at (3.0,0) {click};
+  \node[sv] (s1) at (5.5,0) {the server builds\\a whole new page};
+  \node[pg] (p1) at (8.3,0) {the browser draws\\it from scratch};
+  \draw[fl] (c1) -- (s1);
+  \draw[fl] (s1) -- (p1);
+  \node[good] at (10.0,0.2) {nothing to forget};
+  \node[bad] at (10.0,-0.2) {slow: a page per click};
+  \draw[black!12] (-0.2,-0.8) -- (13.8,-0.8);
+  % 2005
+  \node[yr] at (-0.2,-1.95) {2005\\[-1pt]{\mdseries the page changes itself}};
+  \node[ev] (c2) at (3.0,-1.95) {click};
+  \node[sv] (h2) at (5.0,-1.95) {handler};
+  \node[sa, minimum height=5mm, minimum width=15mm] (v2) at (7.6,-1.35) {variable};
+  \node[pg, minimum height=5mm, minimum width=15mm] (a2) at (7.6,-1.95) {list};
+  \node[pg, minimum height=5mm, minimum width=15mm] (b2) at (7.6,-2.55) {badge};
+  \draw[fl] (c2) -- (h2);
+  \draw[fl] (h2.east) -- (v2.west);
+  \draw[fl] (h2.east) -- (a2.west);
+  \draw[hf/pain, dashed] (h2.east) -- (b2.west);
+  \node[text=hfAlert, font=\sffamily\bfseries\scriptsize] at (6.45,-2.38) {$\times$};
+  \node[good] at (10.0,-1.75) {fast};
+  \node[bad] at (10.0,-2.15) {something to forget};
+  \draw[black!12] (-0.2,-3.1) -- (13.8,-3.1);
+  % 2013
+  \node[yr] at (-0.2,-4.0) {2013\\[-1pt]{\mdseries the page is drawn from the state}};
+  \node[ev] (c3) at (3.0,-4.0) {click};
+  \node[sa] (s3) at (4.6,-4.0) {state};
+  \node[sv] (d3) at (6.4,-4.0) {a new\\description};
+  \node[pg] (p3) at (8.4,-4.0) {the page: only\\what changed};
+  \draw[fl] (c3) -- (s3);
+  \draw[fl] (s3) -- (d3);
+  \draw[fl] (d3) -- (p3);
+  \node[good] at (10.0,-3.8) {nothing to forget};
+  \node[good] at (10.0,-4.2) {fast};
+\end{tikzpicture}
+\caption{Three ways to answer a click. On the server, every click builds a new
+page from the data: nothing can go stale, but every click costs a whole page.
+In the browser, by hand, every handler changes the page in place: fast, but each
+one has to remember every spot. React keeps the first model's rule, the page is
+always drawn from the data, and runs it in the browser.}
+\label{fig:three-models}
+\end{figure}
+
+\begin{question}{Isn't that server-side rendering?}
+Yes. Building the HTML on the server for each request is what
+\emph{server-side rendering} means, but in 1995 nobody called it that: it was
+simply how the web worked. The name became necessary only once pages started
+being built in the browser, by JavaScript, in the early 2010s, and the old way
+needed a word to tell it apart, the same way ``macrotask'' was coined in
+Chapter~3. Today the term usually means something narrower: running the same
+components on the server to send the first HTML, so the page appears before the
+JavaScript arrives, and letting them take over in the browser after that.
+\end{question}
+
+\begin{history}{2010--2013 \textperiodcentered{} Jordan Walke}
+Facebook's server code was still PHP. In February 2010 it released XHP, an
+extension written by Marcel Laverdet that let PHP code contain HTML elements as
+values, built from small pieces and escaped by the language itself. On the
+server the rule was simple: every request built the whole page again from the
+data, so the page could never disagree with it. In the browser, since Ajax, the
+rule was the opposite: the page stayed open for hours, and every handler
+patched it by hand. That's where the phantom badge came from.
+
+Jordan Walke, an engineer at Facebook, wanted the server's rule in the browser,
+without giving back what Ajax had won: on every change, describe the whole page
+again from the data, the way PHP did on every request, but without asking the
+server for anything. The obvious way to do it doesn't work. Throwing away the
+page's elements and building them again is slow, and it loses everything the
+browser keeps inside them: the text half typed into a field, the position of
+the cursor, how far the page was scrolled. Walke rebuilt something cheaper
+instead: a description of the page made of plain JavaScript objects. He
+compared it with the previous description and changed in the real page only
+what was different. That comparison, later called the \emph{virtual DOM}, is
+what made ``build everything again on every change'' affordable.
+
+He built a prototype called FaxJS, renamed it
+FBolt inside Facebook in 2012, and then React. It ran parts of Facebook's news
+feed and, in 2012, Instagram's web site. On May 29, 2013, Walke and Tom
+Occhino released it at JSConf US. The first reactions were mostly hostile,
+because React put HTML inside JavaScript, and separating the two was what
+everyone had been taught.
+\end{history}
+
+\begin{concept}{UI as a function of state}
+The program never changes the page. It keeps its data in a state, and it
+describes what the page should look like for a given state. When the state
+changes, the description is computed again, and the library makes the page
+match it.
+
+\textbf{What it fixes:} only one piece of code decides what each part of the
+screen shows, so there's no second place to forget. A badge left showing a
+message that was already read can't happen.
+
+\textbf{What it costs:} the description is recomputed on every change, even
+when almost nothing changed, and someone has to work out what to actually do to
+the page. That someone is React.
+\end{concept}
+
+The rest of this chapter takes React apart in the order the code meets it: what
+you write, what a tool turns it into, how it reaches the browser, and what
+happens there when someone clicks.
+
+\section{A component, line by line}
+
+In React, the description is written as a \emph{component}: a function that
+returns what to draw. This is a whole one, a button that counts its clicks:
+
+\begin{code}
+import { useState } from 'react';
+
+export function Counter() {
+  const [count, setCount] = useState(0);
+  return (
+    <button onClick={() => setCount(count + 1)}>
+      clicked {count} times
+    </button>
+  );
+}
+\end{code}
+
+Line~1 takes \texttt{useState} from the \texttt{react} package. It isn't an
+object or another name for something: it's a function, one of the few that
+React gives components to call, and it belongs to a family called
+\emph{hooks}.
+
+\begin{history}{2018--2019 \textperiodcentered{} Hooks}
+Until 2019, a React component that had state had to be a class, with methods
+that React called at fixed moments: when the component appeared, when it
+updated, when it went away. Related logic ended up split across those methods,
+and sharing it between components needed patterns that wrapped components
+inside other components. At React Conf, in October 2018, Sophie Alpert and Dan
+Abramov presented \textbf{Hooks}, and React 16.8 shipped them in February 2019:
+functions like \texttt{useState} that a plain function component calls to get
+state and other features.
+\end{history}
+
+Line~3 declares the component, an ordinary function whose name starts with a
+capital letter. Nothing in the file calls it, and nothing in your project will:
+React does. This is the inversion from Chapter~3. \texttt{Counter} is code you
+plug into React, and React calls it whenever the button has to be drawn: once
+when the page starts, and again every time its state changes. React calls
+itself a library, but by the definition in Chapter~3 it's a framework.
+
+Line~4 is where the state comes in, and it does three things at once.
+\texttt{useState(0)} asks React for this component's state, with \texttt{0} as
+the value to start with. React keeps the value, not your function:
+\texttt{Counter} ends after every drawing, and its local variables end with it,
+so the number has to live somewhere that survives between calls.
+\texttt{useState} returns a list of two things, and the square brackets, a
+feature of ES2015 called destructuring, take them out of the list and name
+them. The names are yours; \texttt{[n, setN]} would work the same.
+\texttt{count} is a plain number, the value for this drawing.
+\texttt{setCount} is a function that asks React to keep a new value and to draw
+the component again.
+
+\texttt{setCount} doesn't change \texttt{count}. \texttt{count} is a
+\texttt{const}, and it stays \texttt{0} until this run of \texttt{Counter} is
+over. The new number reaches the screen through the next run, the one React
+starts after \texttt{setCount}: there, \texttt{useState} returns the new value.
+
+Lines~5 to 9 describe the button: an element with a click handler and a text
+with the number in it. It looks like HTML, but it's JSX, the subject of the
+next section, and what it produces when it runs isn't a button on the page. It's
+a few plain JavaScript objects that describe one. The click handler is an arrow
+function that calls \texttt{setCount} with the next number.
+
+No line touches the page. Nothing here finds the button and changes its text,
+the way the jQuery handlers did. That's React's job. How it does it, from the
+moment the page arrives in the browser to the click, is
+Section~\ref{sec:click}, once the next two sections have shown what the JSX
+becomes and how the code gets to the browser.
+
+Everything in the rest of this chapter that looks strange about React comes
+from one fact: React, not you, decides when \texttt{Counter} runs.
+
+\section{JSX}
+
+The \texttt{<button>} inside the function above isn't JavaScript. It's
+\textbf{JSX}, and no browser understands it.
+
+JSX came from the same place as React. XHP's author, Marcel Laverdet, had
+written a small project that added XML literals to JavaScript, and Walke forked
+it into JSX, changing it into a shorter way of writing nested function calls.
+Before running, every JSX element is turned into a call. This is
+\texttt{Counter} after that step:
+
+\begin{code}
+import { useState } from "react";
+import { jsxs as _jsxs } from "react/jsx-runtime";
+export function Counter() {
+  const [count, setCount] = useState(0);
+  return /* @__PURE__ */ _jsxs("button", {
+    onClick: () => setCount(count + 1),
+    children: [
+      "clicked ",
+      count,
+      " times"
+    ]
+  });
+}
+\end{code}
+
+Two programs act on this code, at two different moments, and neither of them
+draws anything.
+
+The first is the build tool, the subject of the next section. It works before
+the browser ever gets the file, and it works on text: it reads the JSX and
+writes the JavaScript above, without running any of it. The element became a
+call to \texttt{\_jsxs} with the tag name and an object of properties, and its
+contents became a list of children. Everything between braces in JSX is
+ordinary JavaScript, passed along as a value. (The \texttt{@\_\_PURE\_\_}
+comment tells the bundler the call has no side effects, so it can be dropped if
+nothing uses its result.)
+
+The second moment is in the browser, each time React calls \texttt{Counter}.
+What runs there is the code above, plain JavaScript, and the browser's engine
+runs it like any other script. \texttt{\_jsxs} is an ordinary function exported
+by React, and it doesn't draw either: it builds an object and returns it.
+Called with the same arguments in Node, with \texttt{count} at 0, it returns
+this:
+
+\begin{terminal}[]
+{
+  '$$typeof': Symbol(react.transitional.element),
+  type: 'button',
+  key: null,
+  props: {
+    onClick: [Function: onClick],
+    children: [ 'clicked ', 0, ' times' ]
+  },
+  _owner: null,
+  _store: {}
+}
+\end{terminal}
+
+This object is the description from Section~\ref{sec:click-models}, and React
+calls it an \emph{element}. \texttt{type} says which tag, \texttt{props} holds
+the handler and the children, and \texttt{\$\$typeof} marks the object as made
+by React. Nothing in it is graphical. It's data, as plain as the JSON a server
+sends.
+
+The button on the screen comes from a third step, which belongs to
+\texttt{react-dom}, the part of React that knows about browsers. It reads the
+element and makes the same DOM calls the jQuery handlers made by hand in
+Section~\ref{sec:by-hand}: it creates the button and its texts and puts them in
+the page. Figure~\ref{fig:jsx-steps} shows the three steps, with the DOM calls
+as they were logged in a simulated browser. \texttt{onClick} isn't in any of
+those calls. Section~\ref{sec:click} shows where it goes.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    who/.style={hf/note, anchor=west, align=left, text width=29mm},
+    cd/.style={hf/base, draw=black!40, fill=black!4, font=\ttfamily\scriptsize, inner sep=2pt, align=left},
+    pg/.style={hf/reader, font=\ttfamily\scriptsize, minimum width=30mm, minimum height=6mm, inner sep=2pt},
+    head/.style={hf/note, font=\sffamily\footnotesize\bfseries, align=center},
+    say/.style={hf/note, font=\sffamily\scriptsize, text=hfBus, text width=24mm, above},
+  }
+  \node[head] at (1.45,1.2) {who, and when};
+  \node[head] at (5.0,1.2) {gets};
+  \node[head] at (11.2,1.2) {gives};
+  \draw[black!12] (-0.1,0.8) -- (13.9,0.8);
+  % 1
+  \node[who] at (0,0) {\textbf{1.} The build tool, before the browser gets the file.};
+  \node[cd] (g1) at (5.0,0) {<button onClick=\{...\}>\\\ \ clicked \{count\} times\\</button>};
+  \node[cd] (o1) at (11.2,0) {\_jsxs("button", \{\\\ \ onClick: ...,\\\ \ children: [...]\\\})};
+  \draw[hf/flow, draw=hfBus] (g1) -- node[say] {rewrites text,\\runs nothing} (o1);
+  \draw[black!12] (-0.1,-1.05) -- (13.9,-1.05);
+  % 2
+  \node[who] at (0,-1.9) {\textbf{2.} \texttt{\_jsxs}, in the browser, each time React calls \texttt{Counter}.};
+  \node[cd] (g2) at (5.0,-1.9) {"button",\\\{ onClick,\\\ \ children \}};
+  \node[cd] (o2) at (11.2,-1.9) {\{ type: "button",\\\ \ props: \{ onClick,\\\ \ \ \ children \} \}};
+  \draw[hf/flow, draw=hfBus] (g2) -- node[say] {builds an object,\\draws nothing} (o2);
+  \draw[black!12] (-0.1,-2.85) -- (13.9,-2.85);
+  % 3
+  \node[who] at (0,-4.3) {\textbf{3.} \texttt{react-dom}, in the browser, after \texttt{Counter} returns.};
+  \node[cd] (g3) at (4.6,-4.3) {\{ type: "button",\\\ \ props: \{ ... \} \}};
+  \node[cd] (o3) at (11.2,-4.3) {document.createTextNode("clicked ")\\document.createTextNode("0")\\document.createTextNode(" times")\\document.createElement("button")\\button.appendChild(\#text)\\button.appendChild(\#text)\\button.appendChild(\#text)\\div.appendChild(button)};
+  \draw[hf/flow, draw=hfBus] (g3) -- node[say] {calls the DOM} (o3);
+  \node[pg] (b) at (11.2,-6.25) {clicked 0 times};
+  \draw[hf/flow, draw=hfReader] (o3) -- (b);
+  \node[hf/note, font=\sffamily\scriptsize, text=hfReader, anchor=east] at ([xshift=-2mm]b.west) {on the screen};
+\end{tikzpicture}
+\caption{From JSX to a button. The build tool rewrites text before the browser
+gets it. In the browser, \texttt{\_jsxs} runs each time React calls
+\texttt{Counter} and returns an object. \texttt{react-dom} reads the object and
+calls the DOM. Only the last step touches the page.}
+\label{fig:jsx-steps}
+\end{figure}
+
+That's also why JSX writes \texttt{className} where HTML writes
+\texttt{class}: the attributes become properties of a JavaScript object, and
+\texttt{className} is what the DOM calls that property, because \texttt{class}
+was a reserved word in early JavaScript.
+
+The objection from 2013, that HTML and JavaScript should be kept apart, was
+wrong. Both of them describe the same screen, and splitting them by language
+puts the two halves of every component in different files. JSX keeps together
+the things that change together. Its real cost is the one the browser imposes:
+since no browser runs JSX, a React project can't run without a build step.
+
+\section{Why a front end has a build}
+
+\begin{history}{2009--2026 \textperiodcentered{} Bundlers}
+For most of its life, the browser had no modules. A page loaded its scripts
+with one \texttt{<script>} tag each, in the right order, and they talked through
+global variables. Once Node gave JavaScript \texttt{require}, people wanted it in
+the browser too. \textbf{Browserify} (2011) followed every \texttt{require} in a
+project and wrote all the files into one, a \emph{bundle}. \textbf{webpack},
+which Tobias Koppers started in 2012 and released as 1.0 in 2014, did the same
+for every kind of file: JavaScript, styles, images. Babel (2014, first called
+6to5) translated new syntax, and later JSX, into something every browser could
+run. In 2016, Facebook released Create React App, which set all of it up with
+one command. That's how React projects started for most of a decade.
+
+Browsers learned ES modules between 2017 and 2018: Safari first, then Chrome
+61 in September 2017, then Firefox 60 in May 2018. In April 2020, Evan You,
+who had created the Vue framework in 2014, released \textbf{Vite}. In
+February 2025, the React team deprecated Create React App, which had no active
+maintainers left, and pointed to frameworks and to build tools like Vite
+instead. Vite 8, in March 2026, replaced its bundler with Rolldown, written in
+Rust.
+\end{history}
+
+webpack's dev server bundled the whole project before showing the first page,
+and again, at least in part, after every change. On a large project that took
+long enough to go get a coffee. Vite's idea was that once browsers understood
+\texttt{import}, the dev server didn't need to bundle anything. The browser
+asks for \texttt{main.jsx}, finds an \texttt{import} of \texttt{Counter.jsx} in
+it and asks for that, and the server transforms each file at the moment it's
+requested. A project with a thousand files and a page that uses forty costs
+forty transforms.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1mm, y=1mm]
+  % bundle first
+  \node[hf/note, anchor=west, font=\sffamily\footnotesize\bfseries] at (0,40) {bundle first};
+  \foreach \i in {0,...,7} \node[hf/source, minimum width=7mm, minimum height=5mm, inner sep=1pt, font=\sffamily\tiny] (a\i) at (5+\i*8,30) {};
+  \node[hf/bus, minimum width=22mm] (b) at (90,30) {one bundle};
+  \node[hf/reader, minimum width=18mm] (br1) at (130,30) {browser};
+  \draw[hf/flow, black!60] (65,30) -- (b);
+  \draw[hf/flow, black!60] (b) -- (br1);
+  \node[hf/note] at (34,23) {every file, before the first page};
+  % on demand
+  \node[hf/note, anchor=west, font=\sffamily\footnotesize\bfseries] at (0,12) {on demand};
+  \foreach \i in {0,...,7} \node[hf/source, minimum width=7mm, minimum height=5mm, inner sep=1pt, opacity=0.35] at (5+\i*8,2) {};
+  \node[hf/source, minimum width=7mm, minimum height=5mm, inner sep=1pt] (m) at (5,2) {};
+  \node[hf/source, minimum width=7mm, minimum height=5mm, inner sep=1pt] (c) at (21,2) {};
+  \node[hf/bus, minimum width=22mm] (srv) at (90,2) {dev server};
+  \node[hf/reader, minimum width=18mm] (br2) at (130,2) {browser};
+  \draw[hf/ask] ([yshift=1.5mm]br2.west) -- ([yshift=1.5mm]srv.east);
+  \draw[hf/answer] ([yshift=-1.5mm]srv.east) -- ([yshift=-1.5mm]br2.west);
+  \node[hf/note, anchor=south] at (110,5) {asks per file};
+  \draw[hf/flow, black!60] (m.south) |- ++(0,-5) -| ([xshift=-4mm]srv.south);
+  \draw[hf/flow, black!60] (c.south) |- ++(0,-3) -| ([xshift=-2mm]srv.south);
+  \node[hf/note] at (55,-9) {only the files the page imports, as it imports them};
+\end{tikzpicture}
+\caption{Two dev servers. Above, the classic one builds the whole project into
+one file first. Below, Vite serves source files as ES modules and transforms
+each one when the browser asks for it.}
+\end{figure}
+
+The dev server still does a lot of work you don't see. When the browser asks
+for \texttt{Counter.jsx}, it gets plain JavaScript: the JSX has become function
+calls, as above, and the import of \texttt{react} now points to a path,
+\url{/node_modules/.vite/deps/react.js}. A browser
+can't look up a bare name like \texttt{react} the way Node can, so the server
+rewrites it. And React itself is still published as CommonJS, so Vite converts
+it to an ES module once and keeps the result in that folder.
+
+In production, Vite bundles anyway. A browser that discovers imports one file
+at a time pays a round trip to the server for each level of the import graph,
+and over a real network that's slower than downloading one file. So the dev
+server and the production build work in opposite ways, and a project can run
+fine in one and break in the other. The build of the counter above turned 15
+modules into a single file of 219.58~kB, 68.64~kB compressed. Almost all of it
+is React.
+
+The \texttt{<script>} tag era of React is over too. React 19, in December 2024,
+stopped publishing the build that defined a global \texttt{React} variable for
+pages without a build step. Vite is the right default for a React project today.
+Create React App is dead and nobody should start a project with it.
+
+\section{From the server to a click}
+\label{sec:click}
+
+All the pieces are on the table: a component, JSX turned into function calls, a
+server that delivers them. What's missing is the order in which they meet in
+the browser. Besides \texttt{Counter.jsx}, the counter needs two more files. One
+is the page itself, almost empty:
+
+\begin{code}[language={},morestring={[b]"}]
+<!doctype html>
+<html>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+\end{code}
+
+The other is the entry point, \texttt{main.jsx}, the one place where your code
+calls React instead of the other way around:
+
+\begin{code}
+import { createRoot } from 'react-dom/client';
+import { Counter } from './Counter.jsx';
+
+createRoot(document.getElementById('root')).render(<Counter />);
+\end{code}
+
+\texttt{createRoot} takes the empty \texttt{div} and hands it to React.
+\texttt{render} gives React the first description, \texttt{<Counter />}, which
+says ``a \texttt{Counter} goes here'' without calling it. From then on, React
+is in charge of everything inside that \texttt{div}.
+
+Those are the three files you write, and none of them reaches the browser as
+you wrote it. What arrives depends on which of the two roads from the previous
+section you're on: the dev server while you work, or the build when the project
+goes to users. Figure~\ref{fig:two-roads} puts them side by side, with the
+requests a browser makes for the counter on each.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    req/.style={anchor=west, font=\ttfamily\scriptsize, inner sep=1pt},
+    ans/.style={anchor=north west, hf/note, font=\sffamily\scriptsize, inner sep=1pt, align=left},
+    tot/.style={hf/note, font=\sffamily\footnotesize\bfseries},
+  }
+  \draw[black!15] (7,0.9) -- (7,-6.3);
+  % dev
+  \node[hf/bus, minimum width=55mm] (dev) at (3.4,0.3) {in dev: the Vite dev server\\{\scriptsize\ttfamily npm run dev}};
+  \foreach \y/\r/\a in {
+      0/{GET /}/{your index.html, plus two scripts Vite added},
+      1/{GET /@vite/client, /@react-refresh}/{Vite's code for updating the page on save},
+      2/{GET /src/main.jsx}/{main.jsx, transformed when asked},
+      3/{GET .../.vite/deps/react-dom\_client.js}/{React's development build},
+      4/{GET /src/Counter.jsx}/{Counter.jsx, transformed when asked},
+      5/{\ldots{} and five more}/{one request per import}} {
+    \node[req] at (0.4,{-0.75-0.72*\y}) {\r};
+    \node[ans] at (0.75,{-0.88-0.72*\y}) {\a};
+  }
+  \node[tot] (tdev) at (3.4,-5.35) {11 requests, about 3.6 MB};
+  % production
+  \node[hf/bus, minimum width=55mm] (prod) at (10.6,0.3) {in production: any web server\\{\scriptsize\ttfamily npm run build}{\scriptsize, once, before}};
+  \foreach \y/\r/\a in {
+      0/{GET /}/{dist/index.html: the div and one script tag},
+      1/{GET /assets/index-BgWl9ddg.js}/{React and your two files, already\\bundled, JSX already turned into calls}} {
+    \node[req] at (7.6,{-0.75-0.72*\y}) {\r};
+    \node[ans] at (7.95,{-0.88-0.72*\y}) {\a};
+  }
+  \node[ans, anchor=north west, text width=58mm] at (7.6,-2.75) {The server transforms nothing. It sends the
+    files the build wrote, and any server that sends files will do.};
+  \node[tot] (tprod) at (10.6,-5.35) {2 requests, 219.58~kB of script};
+  % both
+  \node[hf/reader, minimum width=60mm] (run) at (7,-6.9) {the browser runs \texttt{main.jsx}};
+  \draw[hf/flow, draw=hfReader] (tdev.south) |- (run.west);
+  \draw[hf/flow, draw=hfReader] (tprod.south) |- (run.east);
+\end{tikzpicture}
+\caption{The two roads from your files to the browser, measured on the counter.
+In dev, the page arrives almost as you wrote it, and the browser follows the
+imports one file at a time while Vite transforms each. In production, the build
+did that work earlier and left two files. Both roads end with the browser
+running \texttt{main.jsx}.}
+\label{fig:two-roads}
+\end{figure}
+
+In dev, Vite adds two scripts to the top of your page. \texttt{/@vite/client}
+opens a WebSocket to the dev server, so that when you save a file the server
+can tell the page to load the new version, and \texttt{/@react-refresh} lets
+React swap a component without losing its state. Then the browser reads
+\texttt{<script src="/src/main.jsx">}, asks for it, finds its imports and asks
+for those, one level at a time. Most of the 3.6~MB is React's development
+build, which is not minified and is full of checks that print warnings. The
+JSX becomes calls to \texttt{\_jsxDEV} instead of \texttt{\_jsxs}: the same
+call, with the file name and line number added, so those warnings can point at
+your code.
+
+In production, the work happens before anyone asks. \texttt{vite build} reads
+\texttt{index.html}, follows every import from \texttt{main.jsx}, and writes
+two files to a folder called \texttt{dist}. This is the page:
+
+\begin{code}[language={},morestring={[b]"}]
+<!doctype html>
+<html>
+  <script type="module" crossorigin src="/assets/index-BgWl9ddg.js"></script>
+
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+\end{code}
+
+The other file is the script, with React's production build and your two files
+inside, the JSX already turned into function calls. The letters in its name
+come from its contents, so a new build gets a new name, and a browser holding
+the old one in its cache can't run stale code.
+
+On both roads, the \texttt{div} arrives empty: no button, no number, no
+listener. The page doesn't arrive with the state in it. The button exists only
+after the script runs, and from the moment \texttt{main.jsx} runs the two roads
+are the same. Figure~\ref{fig:click-chain} follows the counter from there to
+the first drawing.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    pg/.style={hf/reader, font=\ttfamily\scriptsize, minimum width=25mm, minimum height=5mm, inner sep=1.5pt, align=center},
+    cd/.style={hf/base, draw=black!40, fill=black!4, font=\ttfamily\scriptsize, minimum width=26mm, minimum height=5mm, inner sep=1.5pt, align=center},
+    kp/.style={hf/store, font=\ttfamily\scriptsize, minimum width=15mm, minimum height=5mm, inner sep=1.5pt},
+    rc/.style={hf/note, font=\sffamily\scriptsize, text=hfBus, align=center, text width=27mm},
+    when/.style={hf/note, anchor=west, align=left, text width=31mm},
+    head/.style={hf/note, font=\sffamily\footnotesize\bfseries, align=center},
+    none/.style={hf/note, text=black!35, font=\sffamily\scriptsize},
+    hot/.style={draw=hfAlert, line width=1pt},
+  }
+  \def\rh{1.8}
+  \node[head, text=hfReader] at (4.65,0.95) {the page (DOM)};
+  \node[head, text=hfBus] at (7.6,0.95) {React};
+  \node[head] at (10.4,0.95) {your code};
+  \node[head, text=hfStore] at (12.9,0.95) {kept by\\React};
+  \draw[black!12] (-0.1,0.55) -- (13.9,0.55);
+  \foreach \r in {1,...,3} \draw[black!12] (-0.1,{-\rh*\r+0.9}) -- (13.9,{-\rh*\r+0.9});
+  % 1
+  \node[when] at (0,0) {\textbf{1.} The HTML arrives.};
+  \node[pg] at (4.65,0) {div\#root\\{\sffamily (empty)}};
+  \node[none] at (7.6,0) {not loaded yet};
+  \node[none] at (10.4,0) {not loaded yet};
+  \node[none] at (12.9,0) {---};
+  % 2
+  \node[when] at (0,{-1*\rh}) {\textbf{2.} The script arrives and \texttt{main.jsx} runs.};
+  \node[pg] at (4.65,{-1*\rh}) {div\#root\\{\sffamily (empty)}};
+  \node[rc] at (7.6,{-1*\rh}) {loaded; receives the first description};
+  \node[cd] at (10.4,{-1*\rh}) {main.jsx:\\render(<Counter />)};
+  \node[none] at (12.9,{-1*\rh}) {---};
+  % 3
+  \node[when] at (0,{-2*\rh}) {\textbf{3.} React calls \texttt{Counter}; \texttt{useState} returns 0.};
+  \node[pg] at (4.65,{-2*\rh}) {div\#root\\{\sffamily (empty)}};
+  \node[rc] at (7.6,{-2*\rh}) {calls \texttt{Counter}};
+  \node[cd] at (10.4,{-2*\rh}) {count = 0\\returns a description};
+  \node[kp] at (12.9,{-2*\rh}) {count: 0};
+  % 4
+  \node[when] at (0,{-3*\rh}) {\textbf{4.} React builds the page from the description.};
+  \node[pg] at (4.65,{-3*\rh}) {<button>\\clicked 0 times};
+  \node[rc] at (7.6,{-3*\rh}) {creates the button and its text, keeps the description};
+  \node[none] at (10.4,{-3*\rh}) {finished};
+  \node[kp] at (12.9,{-3*\rh}) {count: 0};
+\end{tikzpicture}
+\caption{The counter from the HTML to the first drawing, the same on both roads.
+The page arrives empty. Your code runs in rows 2 and 3, and never touches the page:
+\texttt{main.jsx} hands React the first description, and \texttt{Counter}
+returns the description of the button. The number lives in React (green), and
+only React builds the page (blue).}
+\label{fig:click-chain}
+\end{figure}
+
+After row~4, the browser's inspector shows the page as
+\texttt{<div id="root"><button>clicked 0 times</button></div>}, and that isn't
+all of it. React also attached things that never appear in the HTML
+(Figure~\ref{fig:react-left}).
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=1cm]
+  \tikzset{
+    el/.style={hf/reader, font=\ttfamily\scriptsize, minimum width=26mm, minimum height=6mm, align=center},
+    hid/.style={hf/note, font=\sffamily\scriptsize, text=hfBus, align=left, anchor=west},
+    rec/.style={hf/store, font=\sffamily\scriptsize, minimum width=30mm, align=center},
+    link/.style={hf/flow, draw=hfBus, dashed},
+  }
+  \node[hf/note, font=\sffamily\footnotesize\bfseries, text=hfReader] at (0,1.7) {what the HTML shows};
+  \node[hf/note, font=\sffamily\footnotesize\bfseries, text=hfBus] at (5.2,1.7) {what React attached};
+  \node[hf/note, font=\sffamily\footnotesize\bfseries, text=hfStore] at (10.6,1.7) {what React keeps};
+  \node[el] (root) at (0,0.4) {div\#root};
+  \node[el] (btn) at (0,-1.6) {button\\{\sffamily clicked 0 times}};
+  \draw[black!35] (root) -- (btn);
+  \node[hid] (l1) at (2.2,0.4) {87 listeners, one per kind of event:\\\texttt{click}, \texttt{keydown}, \texttt{input}, \ldots};
+  \draw[link] (l1.west) -- (root.east);
+  \node[hid] (l2) at (2.2,-1.25) {no listener of its own};
+  \node[hid] (l3) at (2.2,-1.75) {hidden: its props, \texttt{onClick} among them};
+  \node[hid] (l4) at (2.2,-2.25) {hidden: a link to its record};
+  \draw[link] (l2.west) -- (btn.east);
+  \node[rec] (rb) at (10.6,-2.25) {record of the button};
+  \node[rec] (rc) at (10.6,0.1) {record of \texttt{Counter}:\\the function \texttt{Counter},\\its hooks: \texttt{[0]}};
+  \draw[link] (l4.east) -- (rb.west);
+  \draw[hf/flow, draw=hfStore] (rb) -- node[hf/note, right] {parent} (rc);
+\end{tikzpicture}
+\caption{The page after the first drawing. The HTML shows only the
+\texttt{div} and the button. React put the listeners on the \texttt{div}, not on
+the button, and left two hidden properties on the button: its props, and a link
+to an internal record. Each place in the tree has a record, and the record of
+\texttt{Counter} keeps the function and its state.}
+\label{fig:react-left}
+\end{figure}
+
+All of it comes from the same run. In the built counter, \texttt{createRoot}
+registered 87 kinds of event on the \texttt{div}, \texttt{click} among them, and
+none on the button. The button carries two extra properties whose names start
+with \texttt{\_\_reactProps} and \texttt{\_\_reactFiber}. The first holds the
+props, \texttt{onClick} and \texttt{children}. The second points to the
+button's record, which React calls a \emph{fiber}, the name of the engine React
+was rewritten around in React~16, in 2017. Going up from the button's record
+leads to the record of \texttt{Counter}, which holds the \texttt{0}.
+
+Now the click. Figure~\ref{fig:react-change} follows it from the user's finger
+to the new text.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1cm, y=-0.62cm]
+  \tikzset{
+    lane/.style={hf/base, minimum width=24mm, minimum height=9mm, font=\sffamily\footnotesize},
+    call/.style={hf/flow, black!70},
+    back/.style={hf/flow, black!45, dashed},
+    lbl/.style={hf/note, above, font=\sffamily\scriptsize},
+    mine/.style={draw=hfReader, fill=hfReader!25, line width=0.6pt},
+    rnote/.style={hf/note, font=\sffamily\scriptsize, text=hfBus, align=left, anchor=west, fill=white, inner sep=1pt},
+  }
+  \def\U{0} \def\B{3.0} \def\R{6.6} \def\C{10.6}
+  \node[lane, draw=hfSource, fill=hfSource!10] at (\U,0) {the user};
+  \node[lane, draw=hfReader, fill=hfReader!10] at (\B,0) {the browser\\{\scriptsize and the page}};
+  \node[lane, draw=hfBus, fill=hfBus!10] at (\R,0) {React};
+  \node[lane, draw=hfReader, line width=1.2pt, fill=hfReader!25] at (\C,0) {your code};
+  \foreach \x in {\U,\B,\R,\C} \draw[hf/lifeline] (\x,0.8) -- (\x,17.6);
+  % your code runs only inside these two bars
+  \draw[mine] (\C-0.09,4.2) rectangle (\C+0.09,7.0);
+  \draw[mine] (\C-0.09,10.2) rectangle (\C+0.09,13.6);
+  \node[hf/note, anchor=west, align=left, text=hfReader, font=\sffamily\scriptsize\bfseries] at (\C+0.2,5.6) {the click\\handler};
+  \node[hf/note, anchor=west, align=left, text=hfReader, font=\sffamily\scriptsize\bfseries] at (\C+0.2,11.9) {\texttt{Counter}};
+  % the click
+  \draw[call] (\U,1.6) -- node[lbl] {clicks the button} (\B,1.6);
+  \draw[call] (\B,2.8) -- node[lbl] {calls React's listener} (\R,2.8);
+  \draw[call] (\R,4.2) -- node[lbl] {calls your \texttt{onClick}} (\C,4.2);
+  \node[rnote, anchor=east, align=right] at (\R-0.12,3.75) {finds the button's\\hidden props};
+  \draw[call] (\C,5.3) -- node[lbl] {\texttt{setCount(1)}} (\R,5.3);
+  \node[rnote, anchor=east, align=right] at (\R-0.12,6.0) {keeps \texttt{count = 1},\\plans a new drawing};
+  \draw[back] (\C,7.0) -- node[lbl] {the handler returns} (\R,7.0);
+  \draw[back] (\R,8.0) -- node[lbl] {the click is over} (\B,8.0);
+  \node[hf/note, font=\sffamily\scriptsize, text=hfAlert, fill=white] at (\B,9.0) {still shows 0};
+  % the new drawing
+  \draw[call] (\R,10.2) -- node[lbl] {calls \texttt{Counter()}} (\C,10.2);
+  \draw[call] (\C,11.2) -- node[lbl] {\texttt{useState(0)}} (\R,11.2);
+  \draw[back] (\R,12.2) -- node[lbl] {\texttt{[1, setCount]}} (\C,12.2);
+  \draw[back] (\C,13.6) -- node[lbl] {returns a description} (\R,13.6);
+  \node[rnote] at (\R+0.12,14.5) {compares it with the previous one:\\only the number differs};
+  \draw[call] (\R,15.8) -- node[lbl] {changes one text: 0 $\to$ 1} (\B,15.8);
+  \draw[call] (\B,17.0) -- node[lbl] {draws the screen} (\U,17.0);
+\end{tikzpicture}
+\caption{The click: who calls whom. Solid arrows are calls, dashed arrows are
+returns. Your code runs twice, in the two blue bars, and both times because
+React called it: first the click handler, which only asks React for a new
+value, and then \texttt{Counter}, after the click is over. Neither touches the
+page. Only React does, at the end.}
+\label{fig:react-change}
+\end{figure}
+
+Traced in the simulated browser, the order is exactly that: the handler starts
+and ends, the click event finishes, \texttt{Counter} runs and gets \texttt{1}
+from \texttt{useState}, and only then does the page change. It changes once:
+one piece of text, \texttt{"0"} becoming \texttt{"1"}, inside the same button
+element, which React kept instead of building a new one.
+
+\begin{question}{How does React know it has to call Counter, of all functions?}
+Not from the click. The click only leads React from the clicked element to its
+hidden props, and from the props to the \texttt{onClick} to call. The redraw
+comes from \texttt{setCount}, which isn't a general-purpose function: React made
+it for one record, the record of \texttt{Counter}, the first time
+\texttt{Counter} called \texttt{useState}. Calling it marks that record as
+needing a new drawing, and React then runs the function the record keeps.
+That's also why two counters on the same page never mix their numbers: each has
+its own record, its own \texttt{count} and its own \texttt{setCount}.
+\end{question}
+
+\section{A component isn't a function you call}
+
+The click hides one more question. \texttt{useState(0)} takes no name, so how
+does React know which entry of the record it belongs to? By order. While React runs a component, it keeps
+a list of that component's hooks. The first \texttt{useState} call gets the
+first entry, the second call gets the second, on every render. This is why hooks
+must be called the same number of times, in the same order, every time: never
+inside an \texttt{if}, never inside a loop.
+
+Since a component is a function, it's tempting to call it like one, writing
+\texttt{\{Counter()\}} instead of \texttt{<Counter />}. Both put the same
+button on the screen, until the component has state. Calling a component as a
+function breaks the order without any \texttt{if} in sight:
+
+\begin{code}
+function Counter() {
+  const [count] = useState(0);
+  return <span>clicked {count} times</span>;
+}
+
+function Panel({ show }) {
+  const [title] = useState('panel');
+  return <div>{title} {show && Counter()}</div>;
+}
+\end{code}
+
+\texttt{Counter()} is an ordinary call made while React is running
+\texttt{Panel}, so its \texttt{useState} lands in \texttt{Panel}'s list.
+Rendered first with \texttt{show} false and then with \texttt{show} true,
+\texttt{Panel} suddenly has two hooks instead of one:
+
+\begin{terminal}
+React has detected a change in the order of Hooks called by Panel.
+
+   Previous render            Next render
+   ------------------------------------------------------
+1. useState                   useState
+2. undefined                  useState
+   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Error: Rendered more hooks than during the previous render.
+\end{terminal}
+
+With \texttt{<Counter />} in the same place, it renders ``panel clicked 0
+times''. JSX turns \texttt{<Counter />} into a call to the runtime with
+\texttt{Counter} as an argument, not a call to \texttt{Counter}. React decides
+when to run it and gives it its own list.
+
+Hooks rely on a rule that nothing in the language enforces. It's an odd design,
+and it was the right trade: the code got much shorter, and a lint rule,
+\texttt{rules-of-hooks}, checks the order for you. Turn it on, and never call a
+component yourself.
+
+\section{The browser decides who you can talk to}
+
+A page loaded from \texttt{localhost:5173} that calls an API on
+\texttt{localhost:3000} fails. The API received the request and answered it,
+and a \texttt{curl} to the same address works. The page still gets nothing.
+
+\begin{history}{1995--2014 \textperiodcentered{} Same origin}
+Netscape's browser had cookies since 1994 and got JavaScript in its version 2,
+and together they were dangerous. A script on any page could make the browser
+request a page from another site, and the browser would send that site's
+cookies along, logged in as you. If the script could read the answer, any page
+you visited could read your mail. Netscape's answer, in the same version of the
+browser, was the
+\textbf{same-origin policy}: a script may read only responses from the same
+origin as its page.
+
+Developers spent the next ten years working around it. The best-known trick,
+JSONP, which Bob Ippolito described in 2005, loaded data through a
+\texttt{<script>} tag, which the policy didn't cover, and only worked because
+the page trusted the other site completely. The proper solution started as a
+W3C draft in 2006 and became a Recommendation on 16 January 2014:
+\textbf{Cross-Origin Resource Sharing}, or CORS, in which the server says, in a
+response header, which other origins may read its answers. It now lives in the
+WHATWG Fetch standard.
+\end{history}
+
+\begin{concept}{Origin}
+The scheme, host and port of an address, taken together.
+\texttt{http://localhost:5173} and \texttt{http://localhost:3000} are different
+origins, and a page opened from a file has the origin \texttt{null}. The
+browser sends a cross-origin request, receives the answer, and refuses to hand
+it to the script unless the server's headers allow it.
+
+\textbf{What it fixes:} a page you visit can't read what other sites would
+show you, logged in as you.
+
+\textbf{What it costs:} a front end and its own API on two ports are already
+strangers, and the error appears in the browser, while the server's logs show
+a request answered normally.
+\end{concept}
+
+There are two ways out. The API can send CORS headers naming the front end's
+origin, which means changing the API and getting the headers right for every
+route. Or the front end's own server can forward the calls, so the browser
+only ever talks to one origin. Vite's dev server has that built in: requests to
+a prefix like \texttt{/api} are passed to the real API, and the browser never
+learns there's a second server.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+  \node[hf/reader, minimum width=24mm] (br) at (0,0) {browser\\{\footnotesize page from :5173}};
+  \node[hf/bus, minimum width=24mm] (vite) at (5.2,0) {dev server\\{\footnotesize :5173}};
+  \node[hf/source, minimum width=24mm] (api) at (10.4,0) {API\\{\footnotesize :3000}};
+  \draw[hf/ask] (br) -- node[hf/note, above] {\texttt{/api/health}} (vite);
+  \draw[hf/ask] (vite) -- node[hf/note, above] {\texttt{/health}} (api);
+  \draw[hf/pain, -{Stealth[length=2mm]}, dashed] (br.south) to[bend right=16] node[pos=0.5, below, hf/note, text=hfAlert] {straight to :3000: the answer arrives, the page can't read it} (api.south);
+\end{tikzpicture}
+\caption{Above, the browser only talks to the origin that served the page, and
+the dev server forwards the call. Below, the direct call that the same-origin
+policy blocks.}
+\end{figure}
+
+For a front end and an API built together, the proxy is the better answer. Same
+origin means no CORS headers to maintain and no extra request the browser sends
+first to ask permission. But the proxy exists only while \texttt{npm run dev} is
+running. The build produces static files, and whatever serves them in
+production has to do the same forwarding.
+
+The proxy's target is a setting, and settings in a front end come with a trap.
+Anything the build puts in the bundle is public, because every visitor downloads
+it. So Vite only copies into the browser's code the environment variables whose
+names start with \texttt{VITE\_}, and leaves everything else on the machine that
+runs the build. An address that only the dev server needs should not have that
+prefix. A secret should never be in a front end at all, prefix or not.
+
+\section{Testing what the user sees}
+
+A component test runs in Node, where there's no browser and no page. The usual
+setup brings in \textbf{jsdom}, an implementation of the DOM written in
+JavaScript, and renders the component into it.
+
+What to check is the more interesting question. Airbnb's Enzyme, from 2015, let
+tests reach inside a component and inspect its state and its children. Those
+tests broke whenever someone reorganized a component, even when the screen
+looked exactly the same. In 2018, Kent C.\ Dodds released
+\textbf{Testing Library}, built on the opposite rule: find elements the way a
+user would, by the text on the screen and the role of the element, and check
+what the user would see. A test that finds ``clicked 0 times'', clicks the
+button and then finds ``clicked 1 times'' survives any rewrite of the component
+that keeps the screen the same.
+
+\section{What it costs}
+
+A ten-line counter ships about 220~kB of JavaScript, and every visitor downloads
+it before seeing anything. Almost all of it is React. For a page that will
+show a plant diagram, alarms and charts updating every second, that's a fair
+price. For a page with one form, it's too much, and plain HTML would do.
+
+The tools change fast. The template that creates a React project with Vite
+switched, within a year, to a Rust bundler, a Rust linter as its default and a
+TypeScript compiler written in Go, and Create React App, the standard of 2016,
+is already gone. A front end is built from more pieces, which move faster than
+on the server, and part of the work is keeping up with them.
+
+\section*{Further reading}
+
+\begin{itemize}
+  \item P.\ Hunt, ``React: Rethinking best practices'', JSConf EU, 2013.
+  \item The React team, ``Our First 50,000 Stars'', 2016,
+        \url{https://legacy.reactjs.org/blog/2016/09/28/our-first-50000-stars.html}.
+  \item T.\ Occhino and J.\ Chen, ``Hacker Way: Rethinking Web App Development
+        at Facebook'', F8, 2014.
+  \item D.\ Abramov, ``Why Do React Hooks Rely on Call Order?'', 2018,
+        \url{https://overreacted.io/why-do-hooks-rely-on-call-order/}.
+  \item J.\ Archibald, ``ECMAScript modules in browsers'', 2017,
+        \url{https://jakearchibald.com/2017/es-modules-in-browsers/}.
+  \item The React team, ``Sunsetting Create React App'', 2025,
+        \url{https://react.dev/blog/2025/02/14/sunsetting-create-react-app}.
+  \item A.\ van Kesteren (ed.), \emph{Cross-Origin Resource Sharing}, W3C
+        Recommendation, 2014.
+  \item K.~C.\ Dodds, ``Introducing the react-testing-library'', 2018.
+\end{itemize}
